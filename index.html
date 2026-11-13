@@ -1,0 +1,1199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Jita Ore Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: slim sticky header (title/status + tabs), settings row that scrolls away, tabbed ledgers, item dossier slides in from the right (bottom sheet on phones). */
+:root {
+  --bg: #0d1218;        /* hull dark, slight blue bias */
+  --panel: #141c25;
+  --panel-2: #1b2531;
+  --line: #2a3644;
+  --fg: #dfe6ee;
+  --muted: #8796a6;
+  --accent: #e0a34a;    /* veldspar amber */
+  --accent-ink: #1a1206;
+  --cool: #6fb3d9;      /* compressed / refined cool steel */
+  --good: #5fbf86; --warn: #d9b343; --bad: #e0705f;
+  --heat: 224, 163, 74;
+  --f-display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "IBM Plex Mono", Consolas, "Courier New", monospace;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+  --bg: #eef1f4; --panel: #ffffff; --panel-2: #f3f5f8; --line: #d3dae2; --fg: #16202b; --muted: #5b6878;
+  --accent: #a96510; --accent-ink: #ffffff; --cool: #1f6f9c; --good: #23794a; --warn: #8a6a00; --bad: #b23a2a;
+  --heat: 196, 122, 22; color-scheme: light; } }
+:root[data-theme="light"] {
+  --bg: #eef1f4; --panel: #ffffff; --panel-2: #f3f5f8; --line: #d3dae2; --fg: #16202b; --muted: #5b6878;
+  --accent: #a96510; --accent-ink: #ffffff; --cool: #1f6f9c; --good: #23794a; --warn: #8a6a00; --bad: #b23a2a;
+  --heat: 196, 122, 22; color-scheme: light; }
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }   /* the dossier sets display:grid, which would otherwise override the hidden attribute */
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.45 var(--f-body); }
+@media (max-width: 640px) { body.lock { overflow: hidden; } }   /* phone: the page behind the bottom sheet must not scroll */
+button, select, input, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wrap { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); max-width: 1500px; margin: 0 auto; }
+.num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* Only the title/status row and the tab bar stay on screen. */
+header.deck { position: sticky; top: 0; z-index: 20; background: var(--bg); border-bottom: 1px solid var(--line); }
+.top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 20px; padding-block: 10px 4px; }
+h1 { font: 700 20px/1.1 var(--f-display); letter-spacing: .02em; margin: 0; text-wrap: balance; }
+h1 small { font: 500 12px var(--f-mono); color: var(--muted); letter-spacing: .08em; margin-left: 8px; text-transform: uppercase; }
+.status { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); margin-left: auto; min-width: 0; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--good); } .dot.busy { background: var(--warn); animation: pulse 1s infinite alternate; } .dot.err { background: var(--bad); }
+@keyframes pulse { to { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .dot.busy { animation: none; } }
+@media (max-width: 640px) { .top h1 { flex: 1; } .top h1 small { display: none; } .status { order: 3; flex: 1 0 100%; margin-left: 0; } }   /* phone: title + button on one row, status under it */
+.prog { height: 2px; background: transparent; }
+.prog i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s linear; }
+.btn { background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 6px 12px; cursor: pointer; }
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:disabled { opacity: .55; cursor: default; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+
+.controls { display: flex; flex-wrap: wrap; gap: 10px 18px; padding-block: 12px 0; align-items: end; }
+.ctl { display: grid; gap: 3px; align-content: start; }
+.ctl label, .lbl { font: 600 11.5px var(--f-display); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.hint { font-size: 11.5px; color: var(--muted); max-width: 30ch; min-height: 1em; }
+.hint.warn { color: var(--bad); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.seg button { background: var(--panel); border: 0; border-right: 1px solid var(--line); padding: 5px 10px; cursor: pointer; font-size: 13px; }
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+select, input[type=number], textarea { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; }
+input[type=number] { width: 84px; }
+input.bad { border-color: var(--bad); outline: 2px solid var(--bad); outline-offset: 0; }
+.fees { font-size: 12.5px; color: var(--muted); }
+.fees b { color: var(--fg); font-weight: 500; }
+details.settings { flex: 1 1 100%; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+details.settings summary { cursor: pointer; padding: 8px 12px; font: 600 12px var(--f-display); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+details.settings summary b { color: var(--fg); font-weight: 600; }
+details.settings .inner { display: flex; flex-wrap: wrap; gap: 12px 18px; padding: 4px 12px 12px; align-items: start; }
+fieldset.ycalc { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: start; border: 1px solid var(--line); border-radius: 6px; margin: 0; padding: 8px 12px 10px; min-width: 0; }
+fieldset.ycalc legend { font: 600 10.5px var(--f-display); letter-spacing: .1em; text-transform: uppercase; color: var(--accent); padding: 0 6px; }
+fieldset.ycalc .ywhy { flex: 1 1 100%; max-width: none; margin: 0; font-family: var(--f-mono); }
+select:disabled, input:read-only { opacity: .55; }
+
+nav.tabs { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+nav.tabs button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 14px; cursor: pointer; white-space: nowrap;
+  font: 600 13px var(--f-display); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+nav.tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+
+main { padding-block: 16px 60px; display: grid; gap: 22px; }
+section.block { display: grid; gap: 10px; min-width: 0; }
+.bhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+h2 { font: 600 17px var(--f-display); letter-spacing: .03em; margin: 0; }
+.note { font-size: 12.5px; color: var(--muted); max-width: 75ch; }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+
+/* first-glance verdict */
+.verdict { border: 1px solid var(--accent); border-radius: 6px; background: var(--panel); padding: 10px 14px; display: grid; gap: 6px; }
+.verdict .line { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; }
+.verdict button { background: none; border: 0; padding: 0; cursor: pointer; text-align: left; color: var(--fg); }
+.verdict button:hover { text-decoration: underline; text-decoration-color: var(--accent); }
+.verdict .top1 { font: 600 16px var(--f-display); }
+.verdict .top1 .num { color: var(--accent); }
+.verdict .runners { font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 2px 16px; }
+.verdict .runners button { color: var(--fg); }
+
+.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; }
+th, td { padding: 0; text-align: right; white-space: nowrap; }
+thead th { font: 600 11.5px var(--f-display); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 7px 8px; background: var(--panel-2); border-bottom: 1px solid var(--line); }
+thead tr.tiers th { font-size: 12px; color: var(--fg); border-left: 1px solid var(--line); }
+th.rowh, td.rowh { text-align: left; position: sticky; left: 0; background: var(--panel); z-index: 1; padding: 0 12px; font-weight: 500; border-right: 1px solid var(--line); }
+thead th.rowh { background: var(--panel-2); }
+tbody tr { border-bottom: 1px solid var(--line); }
+tbody tr:last-child { border-bottom: 0; }
+.grp { font: 600 11.5px var(--f-mono); color: var(--accent); margin-right: 8px; }
+td.c { border-left: 1px solid transparent; }
+td.c.t0 { border-left-color: var(--line); }
+.cell { display: block; width: 100%; background: transparent; border: 0; padding: 7px 8px; text-align: right; cursor: pointer; font: 13px var(--f-mono); font-variant-numeric: tabular-nums; }
+.cell:hover { outline: 1px solid var(--accent); outline-offset: -1px; }
+.cell.best { box-shadow: inset 3px 0 0 var(--accent); }      /* one accent bar marks the best route */
+.cell.na { color: var(--muted); cursor: default; }
+.cell.thin, tr.thin td { color: var(--muted); }               /* thin / junk-bid markets are greyed, never hidden */
+.cell.thin { opacity: .7; font-style: italic; }
+.sub { font-size: 11.5px; }
+.gt th.lft, .gt td.lft { text-align: left; padding: 7px 12px; }
+.gt td.lft { color: var(--muted); font-size: 13px; }
+.gt tr.fam { border-top: 2px solid var(--line); }
+.gt td.rowh { padding: 7px 12px; }
+.sub.raw { color: var(--accent); } .sub.comp { color: var(--cool); } .sub.ref { color: var(--good); }
+
+/* plain market tables */
+.mt td { padding: 7px 10px; font: 13px var(--f-mono); font-variant-numeric: tabular-nums; }
+.mt td.rowh { font: 500 14px var(--f-body); padding: 7px 12px; }
+.mt tbody tr[data-id] { cursor: pointer; } .mt tbody tr:hover td { background: var(--panel-2); }
+.mt tbody tr:hover td.rowh { background: var(--panel-2); }
+.mt td.txt { font-family: var(--f-body); }
+.mt tr.tot td { font-weight: 600; border-top: 2px solid var(--line); background: var(--panel-2); }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font: 600 11.5px var(--f-body); border: 1px solid currentColor; }
+.pill.list { color: var(--cool); } .pill.instant { color: var(--good); } .pill.thin { color: var(--warn); } .pill.none { color: var(--muted); }
+.up { color: var(--good); } .down { color: var(--bad); }
+
+/* my haul */
+textarea#haulIn { width: 100%; min-height: 130px; font: 13px/1.4 var(--f-mono); resize: vertical; }
+.haulbar { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: end; }
+.sumbox { border: 1px solid var(--accent); border-radius: 6px; padding: 12px 14px; display: grid; gap: 4px; background: var(--panel); }
+.sumbox .big { font: 600 22px var(--f-mono); font-variant-numeric: tabular-nums; }
+.bad-list { border: 1px solid var(--bad); border-radius: 6px; padding: 10px 14px; display: grid; gap: 4px; font-size: 13px; }
+.bad-list code { font: 12.5px var(--f-mono); }
+
+/* dossier */
+.scrim { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 30; }
+aside.dossier { position: fixed; z-index: 31; top: 0; right: 0; bottom: 0; width: min(560px, 100%); background: var(--panel); border-left: 1px solid var(--line);
+  overflow-y: auto; padding: calc(16px + env(safe-area-inset-top, 0px)) max(20px, env(safe-area-inset-right, 0px)) calc(24px + env(safe-area-inset-bottom, 0px)) 20px; display: grid; gap: 18px; align-content: start; }
+@media (prefers-reduced-motion: no-preference) {
+  aside.dossier.enter { animation: slidein .18s ease-out; }
+  @keyframes slidein { from { transform: translateX(32px); opacity: 0; } }
+}
+@media (prefers-reduced-motion: no-preference) and (max-width: 640px) { @keyframes slidein { from { transform: translateY(32px); opacity: 0; } } }
+@media (max-width: 640px) { aside.dossier { top: auto; height: 88vh; width: 100%; border-left: 0; border-top: 1px solid var(--line); border-radius: 12px 12px 0 0; padding-left: max(16px, env(safe-area-inset-left, 0px)); } }
+.dhead { display: flex; gap: 12px; align-items: start; }
+.dhead h3 { font: 700 20px var(--f-display); margin: 0; flex: 1; text-wrap: balance; }
+.facts { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--muted); }
+.grid4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.kv { background: var(--panel-2); padding: 9px 11px; display: grid; gap: 2px; min-width: 0; }
+.kv .v { font: 500 15px var(--f-mono); font-variant-numeric: tabular-nums; }
+.kv .s { font-size: 11.5px; color: var(--muted); }
+.rec { border: 1px solid var(--accent); border-radius: 6px; padding: 14px; display: grid; gap: 10px; }
+.rec .big { font: 600 26px var(--f-mono); font-variant-numeric: tabular-nums; }
+.rec ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 13px; }
+.chart svg { width: 100%; height: auto; display: block; }
+.chart text { fill: var(--muted); font: 11px var(--f-mono); }
+.reftab td, .reftab th { padding: 5px 8px; font: 12.5px var(--f-mono); }
+.reftab th { font: 600 11.5px var(--f-display); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.reftab td:first-child, .reftab th:first-child { text-align: left; font-family: var(--f-body); }
+.reftab tr.best td { color: var(--accent); }
+footer { font-size: 12px; color: var(--muted); padding-block: 0 40px; display: grid; gap: 6px; max-width: 90ch; }
+footer a, .note a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header class="deck">
+  <div class="wrap top">
+    <h1>Jita Ore Ledger<small>Jita IV-4 · The Forge</small></h1>
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText" aria-hidden="true">Starting…</span><span class="sr" id="statusLive" role="status" aria-live="polite"></span></div>
+    <button class="btn primary" id="refresh" type="button">Refresh prices</button>
+  </div>
+  <div class="prog" aria-hidden="true"><i id="prog"></i></div>
+  <div class="wrap"><nav class="tabs" id="tabs" role="tablist"></nav></div>
+</header>
+
+<div class="wrap controls" id="controls">
+  <div class="ctl"><span class="lbl" id="lb-basis">Price</span>
+    <div class="seg" id="basis" role="group" aria-labelledby="lb-basis">
+      <button type="button" data-v="buy" title="Highest buy order: what you get selling instantly">Jita buy</button>
+      <button type="button" data-v="sell" title="Lowest sell order">Jita sell</button>
+      <button type="button" data-v="avg" title="Volume-weighted average of Jita 4-4 sell orders, ignoring listings over 2x the lowest">Sell avg</button>
+    </div></div>
+  <div class="ctl"><span class="lbl" id="lb-layout">Layout</span>
+    <div class="seg" id="layout" role="group" aria-labelledby="lb-layout">
+      <button type="button" data-v="rows" title="Every grade on its own row">By grade</button>
+      <button type="button" data-v="grid" title="Grades side by side, one row per ore">Grid</button>
+    </div></div>
+  <div class="ctl"><span class="lbl" id="lb-metric">Show</span>
+    <div class="seg" id="metric" role="group" aria-labelledby="lb-metric">
+      <button type="button" data-v="m3">ISK / m³</button>
+      <button type="button" data-v="unit">ISK / unit</button>
+      <button type="button" data-v="pct">% of Veldspar</button>
+    </div></div>
+  <details class="settings" id="settings">
+    <summary>Settings · <span id="setSummary"></span></summary>
+    <div class="inner">
+      <fieldset class="ycalc" id="ycalc">
+        <legend>Refine yield calculator</legend>
+        <div class="ctl"><label for="ycWhere">Where you refine</label><select id="ycWhere">
+          <option value="tatara">Tatara (+5.5%)</option><option value="athanor">Athanor (+2%)</option>
+          <option value="upwell">Other Upwell (Astrahus, Raitaru…)</option><option value="npc">NPC station (50% base)</option>
+          <option value="manual">I'll type my own %</option></select></div>
+        <div class="ctl"><label for="ycSec">System security</label><select id="ycSec">
+          <option value="high">Highsec (0.5 to 1.0)</option><option value="low">Lowsec (0.1 to 0.4)</option>
+          <option value="null">Nullsec (0.0 and below)</option><option value="wh">Wormhole</option></select></div>
+        <div class="ctl"><label for="ycRig">Reprocessing rig</label><select id="ycRig">
+          <option value="0">None</option><option value="1">T1 rig (+1)</option><option value="3">T2 rig (+3)</option></select></div>
+        <div class="ctl"><label for="ycR">Reprocessing</label><select id="ycR" class="lvl"></select></div>
+        <div class="ctl"><label for="ycRe">Reprocessing Efficiency</label><select id="ycRe" class="lvl"></select></div>
+        <div class="ctl"><label for="ycOp">Ore processing skill</label><select id="ycOp" class="lvl"></select></div>
+        <div class="ctl"><label for="ycImp">Implant (slot 10)</label><select id="ycImp">
+          <option value="0">None</option><option value="0.01">RX-801 (+1%)</option><option value="0.02">RX-802 (+2%)</option><option value="0.04">RX-804 (+4%)</option></select></div>
+        <div class="ctl"><label for="yield">Refine yield %</label><input type="number" id="yield" min="1" max="100" step="0.1"><span class="hint" id="yieldHint">Check it against the yield in your in-game reprocessing window.</span></div>
+        <p class="hint ywhy" id="ycWhy"></p>
+      </fieldset>
+      <div class="ctl"><label for="rtax">Reprocess tax %</label><input type="number" id="rtax" min="0" max="100" step="0.1"><span class="hint" id="rtaxHint">Taken off the refined value. 0 for most player structures.</span></div>
+      <div class="ctl"><label for="acct">Accounting</label><select id="acct"></select></div>
+      <div class="ctl"><label for="brel">Broker Relations</label><select id="brel"></select></div>
+      <div class="ctl"><label for="bover">Broker fee override %</label><input type="number" id="bover" min="0" max="10" step="0.01" placeholder="auto"><span class="hint" id="boverHint">Blank = auto from skills. Upwell structures set their own fee.</span></div>
+      <div class="fees" id="fees"></div>
+    </div>
+  </details>
+</div>
+
+<main class="wrap" id="main"></main>
+
+<footer class="wrap">
+  <div>Snapshot prices: <a href="https://market.fuzzwork.co.uk/" target="_blank" rel="noopener">Fuzzwork market aggregates</a> for Jita IV-4 (station 60003760). Order books and daily history: <a href="https://esi.evetech.net/" target="_blank" rel="noopener">EVE Swagger Interface</a>. History volumes are for all of The Forge, not just Jita 4-4, and are averaged over calendar days (days with no trades count as zero).</div>
+  <div>Fees: sales tax 7.5% base, minus 11% per Accounting level; broker fee 3% base, minus 0.3% per Broker Relations level, before standings. Upwell structures set their own broker fee, so use the override there. New orders are priced to 4 significant figures.</div>
+  <div>Thin market: no trades in the last 7 days, or the best buy order is under 30% of the 7-day average. Those numbers are greyed and never ranked above a real market. Compressing needs a compression service (a Upwell structure or a ship module). Reprocessing tables come from CCP's static data. Click any number for the full market dossier. Not affiliated with CCP Games.</div>
+</footer>
+
+<div class="scrim" id="scrim" hidden></div>
+<aside class="dossier" id="dossier" hidden aria-modal="true" role="dialog" aria-labelledby="dTitle"></aside>
+
+<script>
+"use strict";
+const DATA = {"sections":[{"name":"Standard ores","rows":[{"name":"Veldspar","group":"","tiers":[{"raw":1230,"comp":62516},{"raw":17470,"comp":62517},{"raw":17471,"comp":62518},{"raw":46689,"comp":62519}]},{"name":"Scordite","group":"","tiers":[{"raw":1228,"comp":62520},{"raw":17463,"comp":62521},{"raw":17464,"comp":62522},{"raw":46687,"comp":62523}]},{"name":"Pyroxeres","group":"","tiers":[{"raw":1224,"comp":62524},{"raw":17459,"comp":62525},{"raw":17460,"comp":62526},{"raw":46686,"comp":62527}]},{"name":"Plagioclase","group":"","tiers":[{"raw":18,"comp":62528},{"raw":17455,"comp":62529},{"raw":17456,"comp":62530},{"raw":46685,"comp":62531}]},{"name":"Omber","group":"","tiers":[{"raw":1227,"comp":62532},{"raw":17867,"comp":62533},{"raw":17868,"comp":62534},{"raw":46684,"comp":62535}]},{"name":"Kernite","group":"","tiers":[{"raw":20,"comp":62536},{"raw":17452,"comp":62537},{"raw":17453,"comp":62538},{"raw":46683,"comp":62539}]},{"name":"Jaspet","group":"","tiers":[{"raw":1226,"comp":62540},{"raw":17448,"comp":62541},{"raw":17449,"comp":62542},{"raw":46682,"comp":62543}]},{"name":"Hemorphite","group":"","tiers":[{"raw":1231,"comp":62544},{"raw":17444,"comp":62545},{"raw":17445,"comp":62546},{"raw":46681,"comp":62547}]},{"name":"Hedbergite","group":"","tiers":[{"raw":21,"comp":62548},{"raw":17440,"comp":62549},{"raw":17441,"comp":62550},{"raw":46680,"comp":62551}]},{"name":"Gneiss","group":"","tiers":[{"raw":1229,"comp":62552},{"raw":17865,"comp":62553},{"raw":17866,"comp":62554},{"raw":46679,"comp":62555}]},{"name":"Dark Ochre","group":"","tiers":[{"raw":1232,"comp":62556},{"raw":17436,"comp":62557},{"raw":17437,"comp":62558},{"raw":46675,"comp":62559}]},{"name":"Crokite","group":"","tiers":[{"raw":1225,"comp":62560},{"raw":17432,"comp":62561},{"raw":17433,"comp":62562},{"raw":46677,"comp":62563}]},{"name":"Spodumain","group":"","tiers":[{"raw":19,"comp":62572},{"raw":17466,"comp":62573},{"raw":17467,"comp":62574},{"raw":46688,"comp":62575}]},{"name":"Bistot","group":"","tiers":[{"raw":1223,"comp":62564},{"raw":17428,"comp":62565},{"raw":17429,"comp":62566},{"raw":46676,"comp":62567}]},{"name":"Arkonor","group":"","tiers":[{"raw":22,"comp":62568},{"raw":17425,"comp":62569},{"raw":17426,"comp":62570},{"raw":46678,"comp":62571}]},{"name":"Mercoxit","group":"","tiers":[{"raw":11396,"comp":62586},{"raw":17869,"comp":62587},{"raw":17870,"comp":62588},null]}]},{"name":"Moon ores","rows":[{"name":"Chromite","group":"R16","tiers":[{"raw":45501,"comp":62480},{"raw":46302,"comp":62481},{"raw":46303,"comp":62482},null]},{"name":"Otavite","group":"R16","tiers":[{"raw":45498,"comp":62483},{"raw":46296,"comp":62484},{"raw":46297,"comp":62485},null]},{"name":"Sperrylite","group":"R16","tiers":[{"raw":45499,"comp":62486},{"raw":46298,"comp":62487},{"raw":46299,"comp":62488},null]},{"name":"Vanadinite","group":"R16","tiers":[{"raw":45500,"comp":62489},{"raw":46300,"comp":62490},{"raw":46301,"comp":62491},null]},{"name":"Carnotite","group":"R32","tiers":[{"raw":45502,"comp":62492},{"raw":46304,"comp":62493},{"raw":46305,"comp":62494},null]},{"name":"Cinnabar","group":"R32","tiers":[{"raw":45506,"comp":62495},{"raw":46310,"comp":62496},{"raw":46311,"comp":62497},null]},{"name":"Pollucite","group":"R32","tiers":[{"raw":45504,"comp":62498},{"raw":46308,"comp":62499},{"raw":46309,"comp":62500},null]},{"name":"Zircon","group":"R32","tiers":[{"raw":45503,"comp":62501},{"raw":46306,"comp":62502},{"raw":46307,"comp":62503},null]},{"name":"Bitumens","group":"R4","tiers":[{"raw":45492,"comp":62454},{"raw":46284,"comp":62455},{"raw":46285,"comp":62456},null]},{"name":"Coesite","group":"R4","tiers":[{"raw":45493,"comp":62457},{"raw":46286,"comp":62458},{"raw":46287,"comp":62459},null]},{"name":"Sylvite","group":"R4","tiers":[{"raw":45491,"comp":62460},{"raw":46282,"comp":62461},{"raw":46283,"comp":62466},null]},{"name":"Zeolites","group":"R4","tiers":[{"raw":45490,"comp":62463},{"raw":46280,"comp":62464},{"raw":46281,"comp":62467},null]},{"name":"Loparite","group":"R64","tiers":[{"raw":45512,"comp":62504},{"raw":46316,"comp":62505},{"raw":46317,"comp":62506},null]},{"name":"Monazite","group":"R64","tiers":[{"raw":45511,"comp":62507},{"raw":46314,"comp":62508},{"raw":46315,"comp":62509},null]},{"name":"Xenotime","group":"R64","tiers":[{"raw":45510,"comp":62510},{"raw":46312,"comp":62511},{"raw":46313,"comp":62512},null]},{"name":"Ytterbite","group":"R64","tiers":[{"raw":45513,"comp":62513},{"raw":46318,"comp":62514},{"raw":46319,"comp":62515},null]},{"name":"Cobaltite","group":"R8","tiers":[{"raw":45494,"comp":62474},{"raw":46288,"comp":62475},{"raw":46289,"comp":62476},null]},{"name":"Euxenite","group":"R8","tiers":[{"raw":45495,"comp":62471},{"raw":46290,"comp":62472},{"raw":46291,"comp":62473},null]},{"name":"Scheelite","group":"R8","tiers":[{"raw":45497,"comp":62468},{"raw":46294,"comp":62469},{"raw":46295,"comp":62470},null]},{"name":"Titanite","group":"R8","tiers":[{"raw":45496,"comp":62477},{"raw":46292,"comp":62478},{"raw":46293,"comp":62479},null]}]},{"name":"Triglavian ores","rows":[{"name":"Bezdnacine","group":"","tiers":[{"raw":52316,"comp":62576},{"raw":56627,"comp":62577},{"raw":56628,"comp":62578},null]},{"name":"Nesosilicate Rakovene","group":"","tiers":[{"raw":76373,"comp":null},null,null,null]},{"name":"Rakovene","group":"","tiers":[{"raw":52315,"comp":62579},{"raw":56629,"comp":62580},{"raw":56630,"comp":62581},null]},{"name":"Talassonite","group":"","tiers":[{"raw":52306,"comp":62582},{"raw":56625,"comp":62583},{"raw":56626,"comp":62584},null]}]},{"name":"Anomaly & nullsec ores","rows":[{"name":"Mordunium","group":"","tiers":[{"raw":74521,"comp":75275},{"raw":74522,"comp":75276},{"raw":74523,"comp":75277},{"raw":74524,"comp":75278}]},{"name":"Ytirium","group":"","tiers":[{"raw":74525,"comp":75279},{"raw":74526,"comp":75280},{"raw":74527,"comp":75281},{"raw":74528,"comp":75282}]},{"name":"Eifyrium","group":"","tiers":[{"raw":74529,"comp":75283},{"raw":74530,"comp":75284},{"raw":74531,"comp":75285},{"raw":74532,"comp":75286}]},{"name":"Ducinium","group":"","tiers":[{"raw":74533,"comp":75287},{"raw":74534,"comp":75288},{"raw":74535,"comp":75289},{"raw":74536,"comp":75290}]},{"name":"Kylixium","group":"","tiers":[{"raw":81900,"comp":82300},{"raw":81901,"comp":82301},{"raw":81902,"comp":82302},{"raw":81903,"comp":82303}]},{"name":"Nocxite","group":"","tiers":[{"raw":82016,"comp":82304},{"raw":82017,"comp":82305},{"raw":82018,"comp":82306},{"raw":82019,"comp":82307}]},{"name":"Ueganite","group":"","tiers":[{"raw":82205,"comp":82308},{"raw":82206,"comp":82309},{"raw":82207,"comp":82310},{"raw":82208,"comp":82311}]},{"name":"Hezorime","group":"","tiers":[{"raw":82163,"comp":82312},{"raw":82164,"comp":82313},{"raw":82165,"comp":82314},{"raw":82166,"comp":82315}]},{"name":"Griemeer","group":"","tiers":[{"raw":81975,"comp":82316},{"raw":81976,"comp":82317},{"raw":81977,"comp":82318},{"raw":81978,"comp":82319}]}]},{"name":"Deep-space ores","rows":[{"name":"Kangite","group":"","tiers":[{"raw":92568,"comp":92821},{"raw":97562,"comp":97570},{"raw":96290,"comp":96294},null]},{"name":"Moissanite","group":"","tiers":[{"raw":92567,"comp":92820},{"raw":97561,"comp":97569},{"raw":96289,"comp":96293},null]},{"name":"Polycrase","group":"","tiers":[{"raw":92566,"comp":92819},{"raw":97560,"comp":97566},{"raw":96288,"comp":96292},null]},{"name":"Raspite","group":"","tiers":[{"raw":92565,"comp":92818},{"raw":97559,"comp":97564},{"raw":96286,"comp":96291},null]}]}],"items":{"1230":{"id":1230,"n":"Veldspar","v":0.1,"p":100,"m":[[34,400]]},"62516":{"id":62516,"n":"Compressed Veldspar","v":0.001,"p":100,"m":[[34,400]]},"17470":{"id":17470,"n":"Veldspar II-Grade","v":0.1,"p":100,"m":[[34,420]]},"62517":{"id":62517,"n":"Compressed Veldspar II-Grade","v":0.001,"p":100,"m":[[34,420]]},"17471":{"id":17471,"n":"Veldspar III-Grade","v":0.1,"p":100,"m":[[34,440]]},"62518":{"id":62518,"n":"Compressed Veldspar III-Grade","v":0.001,"p":100,"m":[[34,440]]},"46689":{"id":46689,"n":"Veldspar IV-Grade","v":0.1,"p":100,"m":[[34,460]]},"62519":{"id":62519,"n":"Compressed Veldspar IV-Grade","v":0.001,"p":100,"m":[[34,460]]},"1228":{"id":1228,"n":"Scordite","v":0.15,"p":100,"m":[[34,150],[35,110]]},"62520":{"id":62520,"n":"Compressed Scordite","v":0.0015,"p":100,"m":[[34,150],[35,110]]},"17463":{"id":17463,"n":"Scordite II-Grade","v":0.15,"p":100,"m":[[34,158],[35,114]]},"62521":{"id":62521,"n":"Compressed Scordite II-Grade","v":0.0015,"p":100,"m":[[34,158],[35,114]]},"17464":{"id":17464,"n":"Scordite III-Grade","v":0.15,"p":100,"m":[[34,165],[35,119]]},"62522":{"id":62522,"n":"Compressed Scordite III-Grade","v":0.0015,"p":100,"m":[[34,165],[35,119]]},"46687":{"id":46687,"n":"Scordite IV-Grade","v":0.15,"p":100,"m":[[34,173],[35,125]]},"62523":{"id":62523,"n":"Compressed Scordite IV-Grade","v":0.0015,"p":100,"m":[[34,173],[35,125]]},"1224":{"id":1224,"n":"Pyroxeres","v":0.3,"p":100,"m":[[35,90],[36,30]]},"62524":{"id":62524,"n":"Compressed Pyroxeres","v":0.003,"p":100,"m":[[35,90],[36,30]]},"17459":{"id":17459,"n":"Pyroxeres II-Grade","v":0.3,"p":100,"m":[[35,95],[36,32]]},"62525":{"id":62525,"n":"Compressed Pyroxeres II-Grade","v":0.003,"p":100,"m":[[35,95],[36,32]]},"17460":{"id":17460,"n":"Pyroxeres III-Grade","v":0.3,"p":100,"m":[[35,99],[36,33]]},"62526":{"id":62526,"n":"Compressed Pyroxeres III-Grade","v":0.003,"p":100,"m":[[35,99],[36,33]]},"46686":{"id":46686,"n":"Pyroxeres IV-Grade","v":0.3,"p":100,"m":[[35,104],[36,35]]},"62527":{"id":62527,"n":"Compressed Pyroxeres IV-Grade","v":0.003,"p":100,"m":[[35,104],[36,35]]},"18":{"id":18,"n":"Plagioclase","v":0.35,"p":100,"m":[[34,175],[36,70]]},"62528":{"id":62528,"n":"Compressed Plagioclase","v":0.0035,"p":100,"m":[[34,175],[36,70]]},"17455":{"id":17455,"n":"Plagioclase II-Grade","v":0.35,"p":100,"m":[[34,184],[36,74]]},"62529":{"id":62529,"n":"Compressed Plagioclase II-Grade","v":0.0035,"p":100,"m":[[34,184],[36,74]]},"17456":{"id":17456,"n":"Plagioclase III-Grade","v":0.35,"p":100,"m":[[34,193],[36,77]]},"62530":{"id":62530,"n":"Compressed Plagioclase III-Grade","v":0.0035,"p":100,"m":[[34,193],[36,77]]},"46685":{"id":46685,"n":"Plagioclase IV-Grade","v":0.35,"p":100,"m":[[34,201],[36,81]]},"62531":{"id":62531,"n":"Compressed Plagioclase IV-Grade","v":0.0035,"p":100,"m":[[34,201],[36,81]]},"1227":{"id":1227,"n":"Omber","v":0.6,"p":100,"m":[[35,90],[37,75]]},"62532":{"id":62532,"n":"Compressed Omber","v":0.006,"p":100,"m":[[35,90],[37,75]]},"17867":{"id":17867,"n":"Omber II-Grade","v":0.6,"p":100,"m":[[35,95],[37,79]]},"62533":{"id":62533,"n":"Compressed Omber II-Grade","v":0.006,"p":100,"m":[[35,95],[37,79]]},"17868":{"id":17868,"n":"Omber III-Grade","v":0.6,"p":100,"m":[[35,99],[37,83]]},"62534":{"id":62534,"n":"Compressed Omber III-Grade","v":0.006,"p":100,"m":[[35,99],[37,83]]},"46684":{"id":46684,"n":"Omber IV-Grade","v":0.6,"p":100,"m":[[35,104],[37,86]]},"62535":{"id":62535,"n":"Compressed Omber IV-Grade","v":0.006,"p":100,"m":[[35,104],[37,86]]},"20":{"id":20,"n":"Kernite","v":1.2,"p":100,"m":[[36,60],[37,120]]},"62536":{"id":62536,"n":"Compressed Kernite","v":0.012,"p":100,"m":[[36,60],[37,120]]},"17452":{"id":17452,"n":"Kernite II-Grade","v":1.2,"p":100,"m":[[36,63],[37,126]]},"62537":{"id":62537,"n":"Compressed Kernite II-Grade","v":0.012,"p":100,"m":[[36,63],[37,126]]},"17453":{"id":17453,"n":"Kernite III-Grade","v":1.2,"p":100,"m":[[36,66],[37,132]]},"62538":{"id":62538,"n":"Compressed Kernite III-Grade","v":0.012,"p":100,"m":[[36,66],[37,132]]},"46683":{"id":46683,"n":"Kernite IV-Grade","v":1.2,"p":100,"m":[[36,69],[37,138]]},"62539":{"id":62539,"n":"Compressed Kernite IV-Grade","v":0.012,"p":100,"m":[[36,69],[37,138]]},"1226":{"id":1226,"n":"Jaspet","v":2.0,"p":100,"m":[[36,150],[38,50]]},"62540":{"id":62540,"n":"Compressed Jaspet","v":0.02,"p":100,"m":[[36,150],[38,50]]},"17448":{"id":17448,"n":"Jaspet II-Grade","v":2.0,"p":100,"m":[[36,158],[38,53]]},"62541":{"id":62541,"n":"Compressed Jaspet II-Grade","v":0.02,"p":100,"m":[[36,158],[38,53]]},"17449":{"id":17449,"n":"Jaspet III-Grade","v":2.0,"p":100,"m":[[36,165],[38,55]]},"62542":{"id":62542,"n":"Compressed Jaspet III-Grade","v":0.02,"p":100,"m":[[36,165],[38,55]]},"46682":{"id":46682,"n":"Jaspet IV-Grade","v":2.0,"p":100,"m":[[36,173],[38,58]]},"62543":{"id":62543,"n":"Compressed Jaspet IV-Grade","v":0.02,"p":100,"m":[[36,173],[38,58]]},"1231":{"id":1231,"n":"Hemorphite","v":3.0,"p":100,"m":[[37,240],[38,90]]},"62544":{"id":62544,"n":"Compressed Hemorphite","v":0.03,"p":100,"m":[[37,240],[38,90]]},"17444":{"id":17444,"n":"Hemorphite II-Grade","v":3.0,"p":100,"m":[[37,252],[38,95]]},"62545":{"id":62545,"n":"Compressed Hemorphite II-Grade","v":0.03,"p":100,"m":[[37,252],[38,95]]},"17445":{"id":17445,"n":"Hemorphite III-Grade","v":3.0,"p":100,"m":[[37,264],[38,99]]},"62546":{"id":62546,"n":"Compressed Hemorphite III-Grade","v":0.03,"p":100,"m":[[37,264],[38,99]]},"46681":{"id":46681,"n":"Hemorphite IV-Grade","v":3.0,"p":100,"m":[[37,276],[38,104]]},"62547":{"id":62547,"n":"Compressed Hemorphite IV-Grade","v":0.03,"p":100,"m":[[37,276],[38,104]]},"21":{"id":21,"n":"Hedbergite","v":3.0,"p":100,"m":[[35,450],[38,120]]},"62548":{"id":62548,"n":"Compressed Hedbergite","v":0.03,"p":100,"m":[[35,450],[38,120]]},"17440":{"id":17440,"n":"Hedbergite II-Grade","v":3.0,"p":100,"m":[[35,473],[38,126]]},"62549":{"id":62549,"n":"Compressed Hedbergite II-Grade","v":0.03,"p":100,"m":[[35,473],[38,126]]},"17441":{"id":17441,"n":"Hedbergite III-Grade","v":3.0,"p":100,"m":[[35,495],[38,132]]},"62550":{"id":62550,"n":"Compressed Hedbergite III-Grade","v":0.03,"p":100,"m":[[35,495],[38,132]]},"46680":{"id":46680,"n":"Hedbergite IV-Grade","v":3.0,"p":100,"m":[[35,518],[38,138]]},"62551":{"id":62551,"n":"Compressed Hedbergite IV-Grade","v":0.03,"p":100,"m":[[35,518],[38,138]]},"1229":{"id":1229,"n":"Gneiss","v":5.0,"p":100,"m":[[35,2000],[36,1500],[37,800]]},"62552":{"id":62552,"n":"Compressed Gneiss","v":0.05,"p":100,"m":[[35,2000],[36,1500],[37,800]]},"17865":{"id":17865,"n":"Gneiss II-Grade","v":5.0,"p":100,"m":[[35,2100],[36,1575],[37,840]]},"62553":{"id":62553,"n":"Compressed Gneiss II-Grade","v":0.05,"p":100,"m":[[35,2100],[36,1575],[37,840]]},"17866":{"id":17866,"n":"Gneiss III-Grade","v":5.0,"p":100,"m":[[35,2200],[36,1650],[37,880]]},"62554":{"id":62554,"n":"Compressed Gneiss III-Grade","v":0.05,"p":100,"m":[[35,2200],[36,1650],[37,880]]},"46679":{"id":46679,"n":"Gneiss IV-Grade","v":5.0,"p":100,"m":[[35,2300],[36,1725],[37,920]]},"62555":{"id":62555,"n":"Compressed Gneiss IV-Grade","v":0.05,"p":100,"m":[[35,2300],[36,1725],[37,920]]},"1232":{"id":1232,"n":"Dark Ochre","v":8.0,"p":100,"m":[[36,1360],[37,1200],[38,320]]},"62556":{"id":62556,"n":"Compressed Dark Ochre","v":0.08,"p":100,"m":[[36,1360],[37,1200],[38,320]]},"17436":{"id":17436,"n":"Dark Ochre II-Grade","v":8.0,"p":100,"m":[[36,1428],[37,1260],[38,336]]},"62557":{"id":62557,"n":"Compressed Dark Ochre II-Grade","v":0.08,"p":100,"m":[[36,1428],[37,1260],[38,336]]},"17437":{"id":17437,"n":"Dark Ochre III-Grade","v":8.0,"p":100,"m":[[36,1496],[37,1320],[38,352]]},"62558":{"id":62558,"n":"Compressed Dark Ochre III-Grade","v":0.08,"p":100,"m":[[36,1496],[37,1320],[38,352]]},"46675":{"id":46675,"n":"Dark Ochre IV-Grade","v":8.0,"p":100,"m":[[36,1564],[37,1380],[38,368]]},"62559":{"id":62559,"n":"Compressed Dark Ochre IV-Grade","v":0.08,"p":100,"m":[[36,1564],[37,1380],[38,368]]},"1225":{"id":1225,"n":"Crokite","v":16.0,"p":100,"m":[[35,800],[36,2000],[38,800]]},"62560":{"id":62560,"n":"Compressed Crokite","v":0.16,"p":100,"m":[[35,800],[36,2000],[38,800]]},"17432":{"id":17432,"n":"Crokite II-Grade","v":16.0,"p":100,"m":[[35,840],[36,2100],[38,840]]},"62561":{"id":62561,"n":"Compressed Crokite II-Grade","v":0.16,"p":100,"m":[[35,840],[36,2100],[38,840]]},"17433":{"id":17433,"n":"Crokite III-Grade","v":16.0,"p":100,"m":[[35,880],[36,2200],[38,880]]},"62562":{"id":62562,"n":"Compressed Crokite III-Grade","v":0.16,"p":100,"m":[[35,880],[36,2200],[38,880]]},"46677":{"id":46677,"n":"Crokite IV-Grade","v":16.0,"p":100,"m":[[35,920],[36,2300],[38,920]]},"62563":{"id":62563,"n":"Compressed Crokite IV-Grade","v":0.16,"p":100,"m":[[35,920],[36,2300],[38,920]]},"19":{"id":19,"n":"Spodumain","v":16.0,"p":100,"m":[[34,48000],[37,1000],[38,160],[39,80],[40,40]]},"62572":{"id":62572,"n":"Compressed Spodumain","v":0.16,"p":100,"m":[[34,48000],[37,1000],[38,160],[39,80],[40,40]]},"17466":{"id":17466,"n":"Spodumain II-Grade","v":16.0,"p":100,"m":[[34,50400],[37,1050],[38,168],[39,84],[40,42]]},"62573":{"id":62573,"n":"Compressed Spodumain II-Grade","v":0.16,"p":100,"m":[[34,50400],[37,1050],[38,168],[39,84],[40,42]]},"17467":{"id":17467,"n":"Spodumain III-Grade","v":16.0,"p":100,"m":[[34,52800],[37,1100],[38,176],[39,88],[40,44]]},"62574":{"id":62574,"n":"Compressed Spodumain III-Grade","v":0.16,"p":100,"m":[[34,52800],[37,1100],[38,176],[39,88],[40,44]]},"46688":{"id":46688,"n":"Spodumain IV-Grade","v":16.0,"p":100,"m":[[34,55200],[37,1150],[38,184],[39,92],[40,46]]},"62575":{"id":62575,"n":"Compressed Spodumain IV-Grade","v":0.16,"p":100,"m":[[34,55200],[37,1150],[38,184],[39,92],[40,46]]},"1223":{"id":1223,"n":"Bistot","v":16.0,"p":100,"m":[[35,3200],[36,1200],[39,160]]},"62564":{"id":62564,"n":"Compressed Bistot","v":0.16,"p":100,"m":[[35,3200],[36,1200],[39,160]]},"17428":{"id":17428,"n":"Bistot II-Grade","v":16.0,"p":100,"m":[[35,3360],[36,1260],[39,168]]},"62565":{"id":62565,"n":"Compressed Bistot II-Grade","v":0.16,"p":100,"m":[[35,3360],[36,1260],[39,168]]},"17429":{"id":17429,"n":"Bistot III-Grade","v":16.0,"p":100,"m":[[35,3520],[36,1320],[39,176]]},"62566":{"id":62566,"n":"Compressed Bistot III-Grade","v":0.16,"p":100,"m":[[35,3520],[36,1320],[39,176]]},"46676":{"id":46676,"n":"Bistot IV-Grade","v":16.0,"p":100,"m":[[35,3680],[36,1380],[39,184]]},"62567":{"id":62567,"n":"Compressed Bistot IV-Grade","v":0.16,"p":100,"m":[[35,3680],[36,1380],[39,184]]},"22":{"id":22,"n":"Arkonor","v":16.0,"p":100,"m":[[35,3200],[36,1200],[40,120]]},"62568":{"id":62568,"n":"Compressed Arkonor","v":0.16,"p":100,"m":[[35,3200],[36,1200],[40,120]]},"17425":{"id":17425,"n":"Arkonor II-Grade","v":16.0,"p":100,"m":[[35,3360],[36,1260],[40,126]]},"62569":{"id":62569,"n":"Compressed Arkonor II-Grade","v":0.16,"p":100,"m":[[35,3360],[36,1260],[40,126]]},"17426":{"id":17426,"n":"Arkonor III-Grade","v":16.0,"p":100,"m":[[35,3520],[36,1320],[40,132]]},"62570":{"id":62570,"n":"Compressed Arkonor III-Grade","v":0.16,"p":100,"m":[[35,3520],[36,1320],[40,132]]},"46678":{"id":46678,"n":"Arkonor IV-Grade","v":16.0,"p":100,"m":[[35,3680],[36,1380],[40,138]]},"62571":{"id":62571,"n":"Compressed Arkonor IV-Grade","v":0.16,"p":100,"m":[[35,3680],[36,1380],[40,138]]},"11396":{"id":11396,"n":"Mercoxit","v":40.0,"p":100,"m":[[11399,140]]},"62586":{"id":62586,"n":"Compressed Mercoxit","v":0.4,"p":100,"m":[[11399,140]]},"17869":{"id":17869,"n":"Mercoxit II-Grade","v":40.0,"p":100,"m":[[11399,147]]},"62587":{"id":62587,"n":"Compressed Mercoxit II-Grade","v":0.4,"p":100,"m":[[11399,147]]},"17870":{"id":17870,"n":"Mercoxit III-Grade","v":40.0,"p":100,"m":[[11399,154]]},"62588":{"id":62588,"n":"Compressed Mercoxit III-Grade","v":0.4,"p":100,"m":[[11399,154]]},"45490":{"id":45490,"n":"Zeolites","v":10.0,"p":100,"m":[[35,8000],[36,400],[16634,65]]},"62463":{"id":62463,"n":"Compressed Zeolites","v":0.1,"p":100,"m":[[35,8000],[36,400],[16634,65]]},"45491":{"id":45491,"n":"Sylvite","v":10.0,"p":100,"m":[[35,4000],[36,400],[16635,65]]},"62460":{"id":62460,"n":"Compressed Sylvite","v":0.1,"p":100,"m":[[35,4000],[36,400],[16635,65]]},"45492":{"id":45492,"n":"Bitumens","v":10.0,"p":100,"m":[[35,6000],[36,400],[16633,65]]},"62454":{"id":62454,"n":"Compressed Bitumens","v":0.1,"p":100,"m":[[35,6000],[36,400],[16633,65]]},"45493":{"id":45493,"n":"Coesite","v":10.0,"p":100,"m":[[35,2000],[36,400],[16636,65]]},"62457":{"id":62457,"n":"Compressed Coesite","v":0.1,"p":100,"m":[[35,2000],[36,400],[16636,65]]},"46280":{"id":46280,"n":"Brimful Zeolites","v":10.0,"p":100,"m":[[35,9200],[36,460],[16634,75]]},"62464":{"id":62464,"n":"Compressed Brimful Zeolites","v":0.1,"p":100,"m":[[35,9200],[36,460],[16634,75]]},"46281":{"id":46281,"n":"Glistening Zeolites","v":10.0,"p":100,"m":[[35,16000],[36,800],[16634,130]]},"62467":{"id":62467,"n":"Compressed Glistening Zeolites","v":0.1,"p":100,"m":[[35,16000],[36,800],[16634,130]]},"46282":{"id":46282,"n":"Brimful Sylvite","v":10.0,"p":100,"m":[[35,4600],[36,460],[16635,75]]},"62461":{"id":62461,"n":"Compressed Brimful Sylvite","v":0.1,"p":100,"m":[[35,4600],[36,460],[16635,75]]},"46283":{"id":46283,"n":"Glistening Sylvite","v":10.0,"p":100,"m":[[35,8000],[36,800],[16635,130]]},"62466":{"id":62466,"n":"Compressed Glistening Sylvite","v":0.1,"p":100,"m":[[35,8000],[36,800],[16635,130]]},"46284":{"id":46284,"n":"Brimful Bitumens","v":10.0,"p":100,"m":[[35,6900],[36,460],[16633,75]]},"62455":{"id":62455,"n":"Compressed Brimful Bitumens","v":0.1,"p":100,"m":[[35,6900],[36,460],[16633,75]]},"46285":{"id":46285,"n":"Glistening Bitumens","v":10.0,"p":100,"m":[[35,12000],[36,800],[16633,130]]},"62456":{"id":62456,"n":"Compressed Glistening Bitumens","v":0.1,"p":100,"m":[[35,12000],[36,800],[16633,130]]},"46286":{"id":46286,"n":"Brimful Coesite","v":10.0,"p":100,"m":[[35,2300],[36,460],[16636,75]]},"62458":{"id":62458,"n":"Compressed Brimful Coesite","v":0.1,"p":100,"m":[[35,2300],[36,460],[16636,75]]},"46287":{"id":46287,"n":"Glistening Coesite","v":10.0,"p":100,"m":[[35,4000],[36,800],[16636,130]]},"62459":{"id":62459,"n":"Compressed Glistening Coesite","v":0.1,"p":100,"m":[[35,4000],[36,800],[16636,130]]},"45494":{"id":45494,"n":"Cobaltite","v":10.0,"p":100,"m":[[16640,40]]},"62474":{"id":62474,"n":"Compressed Cobaltite","v":0.1,"p":100,"m":[[16640,40]]},"45495":{"id":45495,"n":"Euxenite","v":10.0,"p":100,"m":[[16639,40]]},"62471":{"id":62471,"n":"Compressed Euxenite","v":0.1,"p":100,"m":[[16639,40]]},"45496":{"id":45496,"n":"Titanite","v":10.0,"p":100,"m":[[16638,40]]},"62477":{"id":62477,"n":"Compressed Titanite","v":0.1,"p":100,"m":[[16638,40]]},"45497":{"id":45497,"n":"Scheelite","v":10.0,"p":100,"m":[[16637,40]]},"62468":{"id":62468,"n":"Compressed Scheelite","v":0.1,"p":100,"m":[[16637,40]]},"46288":{"id":46288,"n":"Copious Cobaltite","v":10.0,"p":100,"m":[[16640,46]]},"62475":{"id":62475,"n":"Compressed Copious Cobaltite","v":0.1,"p":100,"m":[[16640,46]]},"46289":{"id":46289,"n":"Twinkling Cobaltite","v":10.0,"p":100,"m":[[16640,80]]},"62476":{"id":62476,"n":"Compressed Twinkling Cobaltite","v":0.1,"p":100,"m":[[16640,80]]},"46290":{"id":46290,"n":"Copious Euxenite","v":10.0,"p":100,"m":[[16639,46]]},"62472":{"id":62472,"n":"Compressed Copious Euxenite","v":0.1,"p":100,"m":[[16639,46]]},"46291":{"id":46291,"n":"Twinkling Euxenite","v":10.0,"p":100,"m":[[16639,80]]},"62473":{"id":62473,"n":"Compressed Twinkling Euxenite","v":0.1,"p":100,"m":[[16639,80]]},"46292":{"id":46292,"n":"Copious Titanite","v":10.0,"p":100,"m":[[16638,46]]},"62478":{"id":62478,"n":"Compressed Copious Titanite","v":0.1,"p":100,"m":[[16638,46]]},"46293":{"id":46293,"n":"Twinkling Titanite","v":10.0,"p":100,"m":[[16638,80]]},"62479":{"id":62479,"n":"Compressed Twinkling Titanite","v":0.1,"p":100,"m":[[16638,80]]},"46294":{"id":46294,"n":"Copious Scheelite","v":10.0,"p":100,"m":[[16637,46]]},"62469":{"id":62469,"n":"Compressed Copious Scheelite","v":0.1,"p":100,"m":[[16637,46]]},"46295":{"id":46295,"n":"Twinkling Scheelite","v":10.0,"p":100,"m":[[16637,80]]},"62470":{"id":62470,"n":"Compressed Twinkling Scheelite","v":0.1,"p":100,"m":[[16637,80]]},"45498":{"id":45498,"n":"Otavite","v":10.0,"p":100,"m":[[16634,10],[16643,40]]},"62483":{"id":62483,"n":"Compressed Otavite","v":0.1,"p":100,"m":[[16634,10],[16643,40]]},"45499":{"id":45499,"n":"Sperrylite","v":10.0,"p":100,"m":[[16635,10],[16644,40]]},"62486":{"id":62486,"n":"Compressed Sperrylite","v":0.1,"p":100,"m":[[16635,10],[16644,40]]},"45500":{"id":45500,"n":"Vanadinite","v":10.0,"p":100,"m":[[16636,10],[16642,40]]},"62489":{"id":62489,"n":"Compressed Vanadinite","v":0.1,"p":100,"m":[[16636,10],[16642,40]]},"45501":{"id":45501,"n":"Chromite","v":10.0,"p":100,"m":[[16633,10],[16641,40]]},"62480":{"id":62480,"n":"Compressed Chromite","v":0.1,"p":100,"m":[[16633,10],[16641,40]]},"46296":{"id":46296,"n":"Lavish Otavite","v":10.0,"p":100,"m":[[16634,12],[16643,46]]},"62484":{"id":62484,"n":"Compressed Lavish Otavite","v":0.1,"p":100,"m":[[16634,12],[16643,46]]},"46297":{"id":46297,"n":"Shimmering Otavite","v":10.0,"p":100,"m":[[16634,20],[16643,80]]},"62485":{"id":62485,"n":"Compressed Shimmering Otavite","v":0.1,"p":100,"m":[[16634,20],[16643,80]]},"46298":{"id":46298,"n":"Lavish Sperrylite","v":10.0,"p":100,"m":[[16635,12],[16644,46]]},"62487":{"id":62487,"n":"Compressed Lavish Sperrylite","v":0.1,"p":100,"m":[[16635,12],[16644,46]]},"46299":{"id":46299,"n":"Shimmering Sperrylite","v":10.0,"p":100,"m":[[16635,20],[16644,80]]},"62488":{"id":62488,"n":"Compressed Shimmering Sperrylite","v":0.1,"p":100,"m":[[16635,20],[16644,80]]},"46300":{"id":46300,"n":"Lavish Vanadinite","v":10.0,"p":100,"m":[[16636,12],[16642,46]]},"62490":{"id":62490,"n":"Compressed Lavish Vanadinite","v":0.1,"p":100,"m":[[16636,12],[16642,46]]},"46301":{"id":46301,"n":"Shimmering Vanadinite","v":10.0,"p":100,"m":[[16636,20],[16642,80]]},"62491":{"id":62491,"n":"Compressed Shimmering Vanadinite","v":0.1,"p":100,"m":[[16636,20],[16642,80]]},"46302":{"id":46302,"n":"Lavish Chromite","v":10.0,"p":100,"m":[[16633,12],[16641,46]]},"62481":{"id":62481,"n":"Compressed Lavish Chromite","v":0.1,"p":100,"m":[[16633,12],[16641,46]]},"46303":{"id":46303,"n":"Shimmering Chromite","v":10.0,"p":100,"m":[[16633,20],[16641,80]]},"62482":{"id":62482,"n":"Compressed Shimmering Chromite","v":0.1,"p":100,"m":[[16633,20],[16641,80]]},"45502":{"id":45502,"n":"Carnotite","v":10.0,"p":100,"m":[[16634,15],[16640,10],[16649,50]]},"62492":{"id":62492,"n":"Compressed Carnotite","v":0.1,"p":100,"m":[[16634,15],[16640,10],[16649,50]]},"45503":{"id":45503,"n":"Zircon","v":10.0,"p":100,"m":[[16636,15],[16638,10],[16648,50]]},"62501":{"id":62501,"n":"Compressed Zircon","v":0.1,"p":100,"m":[[16636,15],[16638,10],[16648,50]]},"45504":{"id":45504,"n":"Pollucite","v":10.0,"p":100,"m":[[16633,15],[16639,10],[16647,50]]},"62498":{"id":62498,"n":"Compressed Pollucite","v":0.1,"p":100,"m":[[16633,15],[16639,10],[16647,50]]},"45506":{"id":45506,"n":"Cinnabar","v":10.0,"p":100,"m":[[16635,15],[16637,10],[16646,50]]},"62495":{"id":62495,"n":"Compressed Cinnabar","v":0.1,"p":100,"m":[[16635,15],[16637,10],[16646,50]]},"46304":{"id":46304,"n":"Replete Carnotite","v":10.0,"p":100,"m":[[16634,17],[16640,12],[16649,58]]},"62493":{"id":62493,"n":"Compressed Replete Carnotite","v":0.1,"p":100,"m":[[16634,17],[16640,12],[16649,58]]},"46305":{"id":46305,"n":"Glowing Carnotite","v":10.0,"p":100,"m":[[16634,30],[16640,20],[16649,100]]},"62494":{"id":62494,"n":"Compressed Glowing Carnotite","v":0.1,"p":100,"m":[[16634,30],[16640,20],[16649,100]]},"46306":{"id":46306,"n":"Replete Zircon","v":10.0,"p":100,"m":[[16636,17],[16638,12],[16648,58]]},"62502":{"id":62502,"n":"Compressed Replete Zircon","v":0.1,"p":100,"m":[[16636,17],[16638,12],[16648,58]]},"46307":{"id":46307,"n":"Glowing Zircon","v":10.0,"p":100,"m":[[16636,30],[16638,20],[16648,100]]},"62503":{"id":62503,"n":"Compressed Glowing Zircon","v":0.1,"p":100,"m":[[16636,30],[16638,20],[16648,100]]},"46308":{"id":46308,"n":"Replete Pollucite","v":10.0,"p":100,"m":[[16633,17],[16639,12],[16647,58]]},"62499":{"id":62499,"n":"Compressed Replete Pollucite","v":0.1,"p":100,"m":[[16633,17],[16639,12],[16647,58]]},"46309":{"id":46309,"n":"Glowing Pollucite","v":10.0,"p":100,"m":[[16633,30],[16639,20],[16647,100]]},"62500":{"id":62500,"n":"Compressed Glowing Pollucite","v":0.1,"p":100,"m":[[16633,30],[16639,20],[16647,100]]},"46310":{"id":46310,"n":"Replete Cinnabar","v":10.0,"p":100,"m":[[16635,17],[16637,12],[16646,58]]},"62496":{"id":62496,"n":"Compressed Replete Cinnabar","v":0.1,"p":100,"m":[[16635,17],[16637,12],[16646,58]]},"46311":{"id":46311,"n":"Glowing Cinnabar","v":10.0,"p":100,"m":[[16635,30],[16637,20],[16646,100]]},"62497":{"id":62497,"n":"Compressed Glowing Cinnabar","v":0.1,"p":100,"m":[[16635,30],[16637,20],[16646,100]]},"45510":{"id":45510,"n":"Xenotime","v":10.0,"p":100,"m":[[16634,20],[16640,20],[16642,10],[16650,22]]},"62510":{"id":62510,"n":"Compressed Xenotime","v":0.1,"p":100,"m":[[16634,20],[16640,20],[16642,10],[16650,22]]},"45511":{"id":45511,"n":"Monazite","v":10.0,"p":100,"m":[[16635,20],[16637,20],[16641,10],[16651,22]]},"62507":{"id":62507,"n":"Compressed Monazite","v":0.1,"p":100,"m":[[16635,20],[16637,20],[16641,10],[16651,22]]},"45512":{"id":45512,"n":"Loparite","v":10.0,"p":100,"m":[[16633,20],[16639,20],[16644,10],[16652,22]]},"62504":{"id":62504,"n":"Compressed Loparite","v":0.1,"p":100,"m":[[16633,20],[16639,20],[16644,10],[16652,22]]},"45513":{"id":45513,"n":"Ytterbite","v":10.0,"p":100,"m":[[16636,20],[16638,20],[16643,10],[16653,22]]},"62513":{"id":62513,"n":"Compressed Ytterbite","v":0.1,"p":100,"m":[[16636,20],[16638,20],[16643,10],[16653,22]]},"46312":{"id":46312,"n":"Bountiful Xenotime","v":10.0,"p":100,"m":[[16634,23],[16640,23],[16642,12],[16650,25]]},"62511":{"id":62511,"n":"Compressed Bountiful Xenotime","v":0.1,"p":100,"m":[[16634,23],[16640,23],[16642,12],[16650,25]]},"46313":{"id":46313,"n":"Shining Xenotime","v":10.0,"p":100,"m":[[16634,40],[16640,40],[16642,20],[16650,44]]},"62512":{"id":62512,"n":"Compressed Shining Xenotime","v":0.1,"p":100,"m":[[16634,40],[16640,40],[16642,20],[16650,44]]},"46314":{"id":46314,"n":"Bountiful Monazite","v":10.0,"p":100,"m":[[16635,23],[16637,23],[16641,12],[16651,25]]},"62508":{"id":62508,"n":"Compressed Bountiful Monazite","v":0.1,"p":100,"m":[[16635,23],[16637,23],[16641,12],[16651,25]]},"46315":{"id":46315,"n":"Shining Monazite","v":10.0,"p":100,"m":[[16635,40],[16637,40],[16641,20],[16651,44]]},"62509":{"id":62509,"n":"Compressed Shining Monazite","v":0.1,"p":100,"m":[[16635,40],[16637,40],[16641,20],[16651,44]]},"46316":{"id":46316,"n":"Bountiful Loparite","v":10.0,"p":100,"m":[[16633,23],[16639,23],[16644,12],[16652,25]]},"62505":{"id":62505,"n":"Compressed Bountiful Loparite","v":0.1,"p":100,"m":[[16633,23],[16639,23],[16644,12],[16652,25]]},"46317":{"id":46317,"n":"Shining Loparite","v":10.0,"p":100,"m":[[16633,40],[16639,40],[16644,20],[16652,44]]},"62506":{"id":62506,"n":"Compressed Shining Loparite","v":0.1,"p":100,"m":[[16633,40],[16639,40],[16644,20],[16652,44]]},"46318":{"id":46318,"n":"Bountiful Ytterbite","v":10.0,"p":100,"m":[[16636,23],[16638,23],[16643,12],[16653,25]]},"62514":{"id":62514,"n":"Compressed Bountiful Ytterbite","v":0.1,"p":100,"m":[[16636,23],[16638,23],[16643,12],[16653,25]]},"46319":{"id":46319,"n":"Shining Ytterbite","v":10.0,"p":100,"m":[[16636,40],[16638,40],[16643,20],[16653,44]]},"62515":{"id":62515,"n":"Compressed Shining Ytterbite","v":0.1,"p":100,"m":[[16636,40],[16638,40],[16643,20],[16653,44]]},"52316":{"id":52316,"n":"Bezdnacine","v":16.0,"p":100,"m":[[34,40000],[37,4800],[40,128]]},"62576":{"id":62576,"n":"Compressed Bezdnacine","v":0.16,"p":100,"m":[[34,40000],[37,4800],[40,128]]},"56627":{"id":56627,"n":"Bezdnacine II-Grade","v":16.0,"p":100,"m":[[34,42000],[37,5040],[40,134]]},"62577":{"id":62577,"n":"Compressed Bezdnacine II-Grade","v":0.16,"p":100,"m":[[34,42000],[37,5040],[40,134]]},"56628":{"id":56628,"n":"Bezdnacine III-Grade","v":16.0,"p":100,"m":[[34,44000],[37,5280],[40,141]]},"62578":{"id":62578,"n":"Compressed Bezdnacine III-Grade","v":0.16,"p":100,"m":[[34,44000],[37,5280],[40,141]]},"52315":{"id":52315,"n":"Rakovene","v":16.0,"p":100,"m":[[34,40000],[37,3200],[39,200]]},"62579":{"id":62579,"n":"Compressed Rakovene","v":0.16,"p":100,"m":[[34,40000],[37,3200],[39,200]]},"56629":{"id":56629,"n":"Rakovene II-Grade","v":16.0,"p":100,"m":[[34,42000],[37,3360],[39,210]]},"62580":{"id":62580,"n":"Compressed Rakovene II-Grade","v":0.16,"p":100,"m":[[34,42000],[37,3360],[39,210]]},"56630":{"id":56630,"n":"Rakovene III-Grade","v":16.0,"p":100,"m":[[34,44000],[37,3520],[39,220]]},"62581":{"id":62581,"n":"Compressed Rakovene III-Grade","v":0.16,"p":100,"m":[[34,44000],[37,3520],[39,220]]},"76373":{"id":76373,"n":"Nesosilicate Rakovene","v":0.5,"p":100,"m":[[34,1500],[37,120],[39,7],[76374,65]]},"52306":{"id":52306,"n":"Talassonite","v":16.0,"p":100,"m":[[34,40000],[38,960],[40,32]]},"62582":{"id":62582,"n":"Compressed Talassonite","v":0.16,"p":100,"m":[[34,40000],[38,960],[40,32]]},"56625":{"id":56625,"n":"Talassonite II-Grade","v":16.0,"p":100,"m":[[34,42000],[38,1008],[40,34]]},"62583":{"id":62583,"n":"Compressed Talassonite II-Grade","v":0.16,"p":100,"m":[[34,42000],[38,1008],[40,34]]},"56626":{"id":56626,"n":"Talassonite III-Grade","v":16.0,"p":100,"m":[[34,44000],[38,1056],[40,35]]},"62584":{"id":62584,"n":"Compressed Talassonite III-Grade","v":0.16,"p":100,"m":[[34,44000],[38,1056],[40,35]]},"74521":{"id":74521,"n":"Mordunium","v":0.1,"p":100,"m":[[35,97]]},"75275":{"id":75275,"n":"Compressed Mordunium","v":0.001,"p":100,"m":[[35,97]]},"74522":{"id":74522,"n":"Mordunium II-Grade","v":0.1,"p":100,"m":[[35,101]]},"75276":{"id":75276,"n":"Compressed Mordunium II-Grade","v":0.001,"p":100,"m":[[35,101]]},"74523":{"id":74523,"n":"Mordunium III-Grade","v":0.1,"p":100,"m":[[35,107]]},"75277":{"id":75277,"n":"Compressed Mordunium III-Grade","v":0.001,"p":100,"m":[[35,107]]},"74524":{"id":74524,"n":"Mordunium IV-Grade","v":0.1,"p":100,"m":[[35,112]]},"75278":{"id":75278,"n":"Compressed Mordunium IV-Grade","v":0.001,"p":100,"m":[[35,112]]},"74525":{"id":74525,"n":"Ytirium","v":0.6,"p":100,"m":[[37,240]]},"75279":{"id":75279,"n":"Compressed Ytirium","v":0.006,"p":100,"m":[[37,240]]},"74526":{"id":74526,"n":"Ytirium II-Grade","v":0.6,"p":100,"m":[[37,252]]},"75280":{"id":75280,"n":"Compressed Ytirium II-Grade","v":0.006,"p":100,"m":[[37,252]]},"74527":{"id":74527,"n":"Ytirium III-Grade","v":0.6,"p":100,"m":[[37,264]]},"75281":{"id":75281,"n":"Compressed Ytirium III-Grade","v":0.006,"p":100,"m":[[37,264]]},"74528":{"id":74528,"n":"Ytirium IV-Grade","v":0.6,"p":100,"m":[[37,276]]},"75282":{"id":75282,"n":"Compressed Ytirium IV-Grade","v":0.006,"p":100,"m":[[37,276]]},"74529":{"id":74529,"n":"Eifyrium","v":16.0,"p":100,"m":[[39,266]]},"75283":{"id":75283,"n":"Compressed Eifyrium","v":0.16,"p":100,"m":[[39,266]]},"74530":{"id":74530,"n":"Eifyrium II-Grade","v":16.0,"p":100,"m":[[39,279]]},"75284":{"id":75284,"n":"Compressed Eifyrium II-Grade","v":0.16,"p":100,"m":[[39,279]]},"74531":{"id":74531,"n":"Eifyrium III-Grade","v":16.0,"p":100,"m":[[39,293]]},"75285":{"id":75285,"n":"Compressed Eifyrium III-Grade","v":0.16,"p":100,"m":[[39,293]]},"74532":{"id":74532,"n":"Eifyrium IV-Grade","v":16.0,"p":100,"m":[[39,306]]},"75286":{"id":75286,"n":"Compressed Eifyrium IV-Grade","v":0.16,"p":100,"m":[[39,306]]},"74533":{"id":74533,"n":"Ducinium","v":16.0,"p":100,"m":[[40,170]]},"75287":{"id":75287,"n":"Compressed Ducinium","v":0.16,"p":100,"m":[[40,170]]},"74534":{"id":74534,"n":"Ducinium II-Grade","v":16.0,"p":100,"m":[[40,179]]},"75288":{"id":75288,"n":"Compressed Ducinium II-Grade","v":0.16,"p":100,"m":[[40,179]]},"74535":{"id":74535,"n":"Ducinium III-Grade","v":16.0,"p":100,"m":[[40,187]]},"75289":{"id":75289,"n":"Compressed Ducinium III-Grade","v":0.16,"p":100,"m":[[40,187]]},"74536":{"id":74536,"n":"Ducinium IV-Grade","v":16.0,"p":100,"m":[[40,196]]},"75290":{"id":75290,"n":"Compressed Ducinium IV-Grade","v":0.16,"p":100,"m":[[40,196]]},"81900":{"id":81900,"n":"Kylixium","v":1.2,"p":100,"m":[[34,300],[35,200],[36,550]]},"82300":{"id":82300,"n":"Compressed Kylixium","v":0.012,"p":100,"m":[[34,300],[35,200],[36,550]]},"81901":{"id":81901,"n":"Kylixium II-Grade","v":1.2,"p":100,"m":[[34,315],[35,210],[36,578]]},"82301":{"id":82301,"n":"Compressed Kylixium II-Grade","v":0.012,"p":100,"m":[[34,315],[35,210],[36,578]]},"81902":{"id":81902,"n":"Kylixium III-Grade","v":1.2,"p":100,"m":[[34,330],[35,220],[36,605]]},"82302":{"id":82302,"n":"Compressed Kylixium III-Grade","v":0.012,"p":100,"m":[[34,330],[35,220],[36,605]]},"81903":{"id":81903,"n":"Kylixium IV-Grade","v":1.2,"p":100,"m":[[34,345],[35,230],[36,633]]},"82303":{"id":82303,"n":"Compressed Kylixium IV-Grade","v":0.012,"p":100,"m":[[34,345],[35,230],[36,633]]},"82016":{"id":82016,"n":"Nocxite","v":4.0,"p":100,"m":[[34,900],[35,150],[38,105]]},"82304":{"id":82304,"n":"Compressed Nocxite","v":0.04,"p":100,"m":[[34,900],[35,150],[38,105]]},"82017":{"id":82017,"n":"Nocxite II-Grade","v":4.0,"p":100,"m":[[34,945],[35,158],[38,111]]},"82305":{"id":82305,"n":"Compressed Nocxite II-Grade","v":0.04,"p":100,"m":[[34,945],[35,158],[38,111]]},"82018":{"id":82018,"n":"Nocxite III-Grade","v":4.0,"p":100,"m":[[34,990],[35,165],[38,116]]},"82306":{"id":82306,"n":"Compressed Nocxite III-Grade","v":0.04,"p":100,"m":[[34,990],[35,165],[38,116]]},"82019":{"id":82019,"n":"Nocxite IV-Grade","v":4.0,"p":100,"m":[[34,1035],[35,173],[38,121]]},"82307":{"id":82307,"n":"Compressed Nocxite IV-Grade","v":0.04,"p":100,"m":[[34,1035],[35,173],[38,121]]},"82205":{"id":82205,"n":"Ueganite","v":5.0,"p":100,"m":[[34,800],[40,40]]},"82308":{"id":82308,"n":"Compressed Ueganite","v":0.05,"p":100,"m":[[34,800],[40,40]]},"82206":{"id":82206,"n":"Ueganite II-Grade","v":5.0,"p":100,"m":[[34,840],[40,42]]},"82309":{"id":82309,"n":"Compressed Ueganite II-Grade","v":0.05,"p":100,"m":[[34,840],[40,42]]},"82207":{"id":82207,"n":"Ueganite III-Grade","v":5.0,"p":100,"m":[[34,880],[40,44]]},"82310":{"id":82310,"n":"Compressed Ueganite III-Grade","v":0.05,"p":100,"m":[[34,880],[40,44]]},"82208":{"id":82208,"n":"Ueganite IV-Grade","v":5.0,"p":100,"m":[[34,920],[40,46]]},"82311":{"id":82311,"n":"Compressed Ueganite IV-Grade","v":0.05,"p":100,"m":[[34,920],[40,46]]},"82163":{"id":82163,"n":"Hezorime","v":5.0,"p":100,"m":[[34,2000],[37,120],[39,60]]},"82312":{"id":82312,"n":"Compressed Hezorime","v":0.05,"p":100,"m":[[34,2000],[37,120],[39,60]]},"82164":{"id":82164,"n":"Hezorime II-Grade","v":5.0,"p":100,"m":[[34,2100],[37,126],[39,63]]},"82313":{"id":82313,"n":"Compressed Hezorime II-Grade","v":0.05,"p":100,"m":[[34,2100],[37,126],[39,63]]},"82165":{"id":82165,"n":"Hezorime III-Grade","v":5.0,"p":100,"m":[[34,2200],[37,132],[39,66]]},"82314":{"id":82314,"n":"Compressed Hezorime III-Grade","v":0.05,"p":100,"m":[[34,2200],[37,132],[39,66]]},"82166":{"id":82166,"n":"Hezorime IV-Grade","v":5.0,"p":100,"m":[[34,2300],[37,138],[39,69]]},"82315":{"id":82315,"n":"Compressed Hezorime IV-Grade","v":0.05,"p":100,"m":[[34,2300],[37,138],[39,69]]},"81975":{"id":81975,"n":"Griemeer","v":0.8,"p":100,"m":[[34,250],[37,80]]},"82316":{"id":82316,"n":"Compressed Griemeer","v":0.008,"p":100,"m":[[34,250],[37,80]]},"81976":{"id":81976,"n":"Griemeer II-Grade","v":0.8,"p":100,"m":[[34,263],[37,84]]},"82317":{"id":82317,"n":"Compressed Griemeer II-Grade","v":0.008,"p":100,"m":[[34,263],[37,84]]},"81977":{"id":81977,"n":"Griemeer III-Grade","v":0.8,"p":100,"m":[[34,275],[37,88]]},"82318":{"id":82318,"n":"Compressed Griemeer III-Grade","v":0.008,"p":100,"m":[[34,275],[37,88]]},"81978":{"id":81978,"n":"Griemeer IV-Grade","v":0.8,"p":100,"m":[[34,288],[37,92]]},"82319":{"id":82319,"n":"Compressed Griemeer IV-Grade","v":0.008,"p":100,"m":[[34,288],[37,92]]},"92568":{"id":92568,"n":"Flawed Kangite","v":1.0,"p":100,"m":[[34,1000],[35,750],[92572,10]]},"92821":{"id":92821,"n":"Compressed Flawed Kangite","v":0.01,"p":100,"m":[[34,1000],[35,750],[92572,10]]},"96290":{"id":96290,"n":"Kangite Z-Grade","v":1.0,"p":100,"m":[[36,75],[38,25],[97515,25]]},"96294":{"id":96294,"n":"Compressed Kangite Z-Grade","v":0.01,"p":100,"m":[[36,75],[38,25],[97515,25]]},"97562":{"id":97562,"n":"Kangite X-Grade","v":1.0,"p":100,"m":[[34,1000],[35,750],[97515,10]]},"97570":{"id":97570,"n":"Compressed Kangite X-Grade","v":0.01,"p":100,"m":[[34,1000],[35,750],[97515,10]]},"92567":{"id":92567,"n":"Flawed Moissanite","v":1.0,"p":100,"m":[[34,1000],[35,750],[92571,10]]},"92820":{"id":92820,"n":"Compressed Flawed Moissanite","v":0.01,"p":100,"m":[[34,1000],[35,750],[92571,10]]},"96289":{"id":96289,"n":"Moissanite Z-Grade","v":1.0,"p":100,"m":[[36,75],[38,25],[97514,25]]},"96293":{"id":96293,"n":"Compressed Moissanite Z-Grade","v":0.01,"p":100,"m":[[36,75],[38,25],[97514,25]]},"97561":{"id":97561,"n":"Moissanite X-Grade","v":1.0,"p":100,"m":[[34,1000],[35,750],[97514,10]]},"97569":{"id":97569,"n":"Compressed Moissanite X-Grade","v":0.01,"p":100,"m":[[34,1000],[35,750],[97514,10]]},"92566":{"id":92566,"n":"Flawed Polycrase","v":1.0,"p":100,"m":[[34,1000],[35,750],[92570,10]]},"92819":{"id":92819,"n":"Compressed Flawed Polycrase","v":0.01,"p":100,"m":[[34,1000],[35,750],[92570,10]]},"96288":{"id":96288,"n":"Polycrase Z-Grade","v":1.0,"p":100,"m":[[36,75],[38,25],[97513,25]]},"96292":{"id":96292,"n":"Compressed Polycrase Z-Grade","v":0.01,"p":100,"m":[[36,75],[38,25],[97513,25]]},"97560":{"id":97560,"n":"Polycrase X-Grade","v":1.0,"p":100,"m":[[34,1000],[35,750],[97513,10]]},"97566":{"id":97566,"n":"Compressed Polycrase X-Grade","v":0.01,"p":100,"m":[[34,1000],[35,750],[97513,10]]},"92565":{"id":92565,"n":"Flawed Raspite","v":1.0,"p":100,"m":[[34,1000],[35,750],[92569,10]]},"92818":{"id":92818,"n":"Compressed Flawed Raspite","v":0.01,"p":100,"m":[[34,1000],[35,750],[92569,10]]},"96286":{"id":96286,"n":"Raspite Z-Grade","v":1.0,"p":100,"m":[[36,75],[38,25],[97512,25]]},"96291":{"id":96291,"n":"Compressed Raspite Z-Grade","v":0.01,"p":100,"m":[[36,75],[38,25],[97512,25]]},"97559":{"id":97559,"n":"Raspite X-Grade","v":1.0,"p":100,"m":[[34,1000],[35,750],[97512,10]]},"97564":{"id":97564,"n":"Compressed Raspite X-Grade","v":0.01,"p":100,"m":[[34,1000],[35,750],[97512,10]]},"16262":{"id":16262,"n":"Clear Icicle","v":1000.0,"p":1,"m":[[16272,69],[16273,35],[16274,414],[16275,1]]},"28434":{"id":28434,"n":"Compressed Clear Icicle","v":100.0,"p":1,"m":[[16272,69],[16273,35],[16274,414],[16275,1]]},"16263":{"id":16263,"n":"Glacial Mass","v":1000.0,"p":1,"m":[[16272,69],[16273,35],[16275,1],[17889,414]]},"28438":{"id":28438,"n":"Compressed Glacial Mass","v":100.0,"p":1,"m":[[16272,69],[16273,35],[16275,1],[17889,414]]},"16264":{"id":16264,"n":"Blue Ice","v":1000.0,"p":1,"m":[[16272,69],[16273,35],[16275,1],[17887,414]]},"28433":{"id":28433,"n":"Compressed Blue Ice","v":100.0,"p":1,"m":[[16272,69],[16273,35],[16275,1],[17887,414]]},"16265":{"id":16265,"n":"White Glaze","v":1000.0,"p":1,"m":[[16272,69],[16273,35],[16275,1],[17888,414]]},"28444":{"id":28444,"n":"Compressed White Glaze","v":100.0,"p":1,"m":[[16272,69],[16273,35],[16275,1],[17888,414]]},"16266":{"id":16266,"n":"Glare Crust","v":1000.0,"p":1,"m":[[16272,1381],[16273,691],[16275,35]]},"28439":{"id":28439,"n":"Compressed Glare Crust","v":100.0,"p":1,"m":[[16272,1381],[16273,691],[16275,35]]},"16267":{"id":16267,"n":"Dark Glitter","v":1000.0,"p":1,"m":[[16272,691],[16273,1381],[16275,69]]},"28435":{"id":28435,"n":"Compressed Dark Glitter","v":100.0,"p":1,"m":[[16272,691],[16273,1381],[16275,69]]},"16268":{"id":16268,"n":"Gelidus","v":1000.0,"p":1,"m":[[16272,345],[16273,691],[16275,104]]},"28437":{"id":28437,"n":"Compressed Gelidus","v":100.0,"p":1,"m":[[16272,345],[16273,691],[16275,104]]},"16269":{"id":16269,"n":"Krystallos","v":1000.0,"p":1,"m":[[16272,173],[16273,691],[16275,173]]},"28440":{"id":28440,"n":"Compressed Krystallos","v":100.0,"p":1,"m":[[16272,173],[16273,691],[16275,173]]},"17975":{"id":17975,"n":"Blue Ice IV-Grade","v":1000.0,"p":1,"m":[[16272,104],[16273,55],[16275,1],[17887,483]]},"28443":{"id":28443,"n":"Compressed Blue Ice IV-Grade","v":100.0,"p":1,"m":[[16272,104],[16273,55],[16275,1],[17887,483]]},"17976":{"id":17976,"n":"White Glaze IV-Grade","v":1000.0,"p":1,"m":[[16272,104],[16273,55],[16275,1],[17888,483]]},"28441":{"id":28441,"n":"Compressed White Glaze IV-Grade","v":100.0,"p":1,"m":[[16272,104],[16273,55],[16275,1],[17888,483]]},"17977":{"id":17977,"n":"Glacial Mass IV-Grade","v":1000.0,"p":1,"m":[[16272,104],[16273,55],[16275,1],[17889,483]]},"28442":{"id":28442,"n":"Compressed Glacial Mass IV-Grade","v":100.0,"p":1,"m":[[16272,104],[16273,55],[16275,1],[17889,483]]},"17978":{"id":17978,"n":"Clear Icicle IV-Grade","v":1000.0,"p":1,"m":[[16272,104],[16273,55],[16274,483],[16275,1]]},"28436":{"id":28436,"n":"Compressed Clear Icicle IV-Grade","v":100.0,"p":1,"m":[[16272,104],[16273,55],[16274,483],[16275,1]]},"34":{"id":34,"n":"Tritanium","v":0.01,"p":1,"m":[]},"35":{"id":35,"n":"Pyerite","v":0.01,"p":1,"m":[]},"36":{"id":36,"n":"Mexallon","v":0.01,"p":1,"m":[]},"37":{"id":37,"n":"Isogen","v":0.01,"p":1,"m":[]},"38":{"id":38,"n":"Nocxium","v":0.01,"p":1,"m":[]},"39":{"id":39,"n":"Zydrine","v":0.01,"p":1,"m":[]},"40":{"id":40,"n":"Megacyte","v":0.01,"p":1,"m":[]},"11399":{"id":11399,"n":"Morphite","v":0.01,"p":1,"m":[]},"16272":{"id":16272,"n":"Heavy Water","v":0.4,"p":1,"m":[]},"16273":{"id":16273,"n":"Liquid Ozone","v":0.4,"p":1,"m":[]},"16274":{"id":16274,"n":"Helium Isotopes","v":0.03,"p":1,"m":[]},"16275":{"id":16275,"n":"Strontium Clathrates","v":3.0,"p":1,"m":[]},"16633":{"id":16633,"n":"Hydrocarbons","v":0.05,"p":1,"m":[]},"16634":{"id":16634,"n":"Atmospheric Gases","v":0.05,"p":1,"m":[]},"16635":{"id":16635,"n":"Evaporite Deposits","v":0.05,"p":1,"m":[]},"16636":{"id":16636,"n":"Silicates","v":0.05,"p":1,"m":[]},"16637":{"id":16637,"n":"Tungsten","v":0.05,"p":1,"m":[]},"16638":{"id":16638,"n":"Titanium","v":0.05,"p":1,"m":[]},"16639":{"id":16639,"n":"Scandium","v":0.05,"p":1,"m":[]},"16640":{"id":16640,"n":"Cobalt","v":0.05,"p":1,"m":[]},"16641":{"id":16641,"n":"Chromium","v":0.05,"p":1,"m":[]},"16642":{"id":16642,"n":"Vanadium","v":0.05,"p":1,"m":[]},"16643":{"id":16643,"n":"Cadmium","v":0.05,"p":1,"m":[]},"16644":{"id":16644,"n":"Platinum","v":0.05,"p":1,"m":[]},"16646":{"id":16646,"n":"Mercury","v":0.05,"p":1,"m":[]},"16647":{"id":16647,"n":"Caesium","v":0.05,"p":1,"m":[]},"16648":{"id":16648,"n":"Hafnium","v":0.05,"p":1,"m":[]},"16649":{"id":16649,"n":"Technetium","v":0.05,"p":1,"m":[]},"16650":{"id":16650,"n":"Dysprosium","v":0.05,"p":1,"m":[]},"16651":{"id":16651,"n":"Neodymium","v":0.05,"p":1,"m":[]},"16652":{"id":16652,"n":"Promethium","v":0.05,"p":1,"m":[]},"16653":{"id":16653,"n":"Thulium","v":0.05,"p":1,"m":[]},"17887":{"id":17887,"n":"Oxygen Isotopes","v":0.03,"p":1,"m":[]},"17888":{"id":17888,"n":"Nitrogen Isotopes","v":0.03,"p":1,"m":[]},"17889":{"id":17889,"n":"Hydrogen Isotopes","v":0.03,"p":1,"m":[]},"48927":{"id":48927,"n":"Chromodynamic Tricarboxyls","v":1.0,"p":1,"m":[]},"76374":{"id":76374,"n":"Neo-Jadarite","v":0.01,"p":1,"m":[]},"88087":{"id":88087,"n":"Eleutrium","v":0.01,"p":1,"m":[]},"97512":{"id":97512,"n":"Aberrant Raspite","v":0.01,"p":1,"m":[]},"97513":{"id":97513,"n":"Aberrant Polycrase","v":0.01,"p":1,"m":[]},"97514":{"id":97514,"n":"Aberrant Moissanite","v":0.01,"p":1,"m":[]},"97515":{"id":97515,"n":"Aberrant Kangite","v":0.01,"p":1,"m":[]}},"ice":[{"name":"Blue Ice","group":"","tiers":[{"raw":16264,"comp":28433},{"raw":17975,"comp":28443},null,null]},{"name":"Clear Icicle","group":"","tiers":[{"raw":16262,"comp":28434},{"raw":17978,"comp":28436},null,null]},{"name":"Dark Glitter","group":"","tiers":[{"raw":16267,"comp":28435},null,null,null]},{"name":"Gelidus","group":"","tiers":[{"raw":16268,"comp":28437},null,null,null]},{"name":"Glacial Mass","group":"","tiers":[{"raw":16263,"comp":28438},{"raw":17977,"comp":28442},null,null]},{"name":"Glare Crust","group":"","tiers":[{"raw":16266,"comp":28439},null,null,null]},{"name":"Krystallos","group":"","tiers":[{"raw":16269,"comp":28440},null,null,null]},{"name":"White Glaze","group":"","tiers":[{"raw":16265,"comp":28444},{"raw":17976,"comp":28441},null,null]}],"products":{"Mineral":[34,35,36,37,38,39,40,11399,48927,76374,88087,97512,97513,97514,97515],"Moon Materials":[16633,16634,16635,16636,16637,16638,16639,16640,16641,16642,16643,16644,16646,16647,16648,16649,16650,16651,16652,16653],"Ice Product":[16272,16273,16274,16275,17887,17888,17889]}};
+const STATION = 60003760, REGION = 10000002;
+const ESI = "https://esi.evetech.net/latest";
+const VELD = 1230;
+const I = DATA.items;                       // id -> {id, n, v, p, m:[[matId, qty]]}
+const item = id => I[id];
+const $ = id => document.getElementById(id);
+
+// ---------- settings (per-viewer, remembered in localStorage) ----------
+const DEF = { basis: "buy", metric: "m3", layout: "rows", yield: 90.6, rtax: 0, acct: 5, brel: 5, bover: "", buyback: 90, bfilter: "", tab: "ores" };
+// Valid ranges for the typed numbers. Anything outside is rejected and the last good value stays in force.
+const LIM = { yield: [1, 100], rtax: [0, 100], bover: [0, 10], buyback: [1, 100] };
+const inRange = (k, v) => typeof v === "number" && isFinite(v) && v >= LIM[k][0] && v <= LIM[k][1];
+const store = { get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+                set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
+const S = Object.assign({}, DEF, store.get("ledger.settings") || {});
+// A hand-edited or old saved value must not poison the maths: fall back to the default for anything invalid.
+for (const k of ["yield", "rtax", "buyback"]) if (!inRange(k, S[k])) S[k] = DEF[k];
+if (S.bover !== "" && !inRange("bover", S.bover)) S.bover = "";
+for (const k of ["acct", "brel"]) if (![0, 1, 2, 3, 4, 5].includes(S[k])) S[k] = DEF[k];
+// Yield calculator inputs. Default = the best possible setup (Tatara, nullsec, T2 rig, all V, RX-804) = 90.6%.
+const YC_DEF = { where: "tatara", sec: "null", rig: 3, r: 5, re: 5, op: 5, imp: 0.04 };
+S.yc = Object.assign({}, YC_DEF, S.yc || {});
+
+// EVE University's reprocessing formula (Upwell):
+//   yield = (50 + rig) x (1 + security bonus, only with a rig) x (1 + structure bonus)
+//           x (1 + 3% x Reprocessing) x (1 + 2% x Reprocessing Efficiency) x (1 + 2% x ore skill) x (1 + implant)
+// NPC stations use their own base (most are 50%) and ignore rigs, security and structure bonuses.
+function calcYield(c) {
+  const SEC = { high: 0, low: 0.06, null: 0.12, wh: 0.12 }, STRUCT = { tatara: 0.055, athanor: 0.02, upwell: 0, npc: 0 };
+  const npc = c.where === "npc", rig = npc ? 0 : +c.rig;
+  const base = npc ? 50 : (50 + rig) * (1 + (rig > 0 ? SEC[c.sec] : 0)) * (1 + STRUCT[c.where]);
+  const skills = (1 + 0.03 * c.r) * (1 + 0.02 * c.re) * (1 + 0.02 * c.op);
+  return { base, skills, imp: +c.imp, total: base * skills * (1 + +c.imp) };
+}
+const save = () => store.set("ledger.settings", { yc: S.yc, basis: S.basis, metric: S.metric, layout: S.layout, yield: S.yield, rtax: S.rtax, acct: S.acct, brel: S.brel, bover: S.bover, buyback: S.buyback, bfilter: S.bfilter, tab: S.tab });
+
+function fees() {
+  const tax = 7.5 * (1 - 0.11 * S.acct) / 100;
+  const broker = S.bover !== "" ? S.bover / 100 : Math.max(0, 3 - 0.3 * S.brel) / 100;
+  return { tax, broker };
+}
+
+// ---------- market data ----------
+const AGG = {};    // fuzzwork snapshot: id -> {bid, ask, pct}
+const BOOK = {};   // ESI order book at Jita 4-4: id -> {bid, ask, avg, ..., gen, t}. Replaced in place, never wiped.
+const HIST = {};   // ESI daily history (The Forge), last 30 records: id -> [{date, average, highest, lowest, volume, order_count}]
+const HISTT = {};  // when each HIST entry was fetched (ms)
+let HDAY = "";     // newest history date seen across all items = "the market's last day"; calendar windows end here
+let gen = 0;       // bumped on every refresh; a book from an older generation is stale and gets refetched
+const pending = new Set();
+
+// ----- ESI etiquette: capped concurrency, per-request backoff, honour Retry-After / 420 / 429, circuit breaker -----
+class EsiError extends Error { constructor(msg, status, waitSec) { super(msg); this.status = status; this.waitSec = waitSec; } }
+const MAX_ACTIVE = 8;                 // never more than 8 requests in flight
+const FAIL = new Map();               // "b123"/"h123" -> {tries, next, gaveUp}. A key in here is NOT re-requested until `next` (or never, once gaveUp).
+const MAX_TRIES = 3, BACKOFF_FIRST = 60e3, BACKOFF_CAP = 300e3;
+let rateHold = 0;                     // global pause ESI asked for (420/429, Retry-After). Always honoured, even if the user presses Refresh.
+let breakerHold = 0, penalty = 0, consec = 0;   // circuit breaker: pause after a run of failures; its length (s) and failures in a row since the last success
+const heldUntil = () => Math.max(rateHold, breakerHold);
+
+async function getJSON(url) {
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 20e3);   // a hung request must not hold a slot forever
+  try {
+    const r = await fetch(url, { signal: ctl.signal });
+    if (!r.ok) {
+      const ra = parseFloat(r.headers.get("retry-after"));
+      let wait = isFinite(ra) ? ra : 0;
+      if ((r.status === 420 || r.status === 429) && !wait) wait = 60;                 // rate-limited with no hint: assume a minute
+      const remain = parseFloat(r.headers.get("x-esi-error-limit-remain"));          // ESI's own error budget, when the browser exposes it
+      if (isFinite(remain) && remain <= 20) wait = Math.max(wait, parseFloat(r.headers.get("x-esi-error-limit-reset")) || 60);
+      throw new EsiError(r.status + " " + url, r.status, wait);
+    }
+    return { json: await r.json(), pages: +(r.headers.get("x-pages") || 1) };
+  } finally { clearTimeout(timer); }
+}
+
+async function loadAgg() {
+  const ids = Object.keys(I);
+  const { json } = await getJSON(`https://market.fuzzwork.co.uk/aggregates/?station=${STATION}&types=${ids.join(",")}`);
+  for (const [id, a] of Object.entries(json)) {
+    const bid = +a.buy.max, ask = +a.sell.min;
+    AGG[id] = { bid: bid > 0 ? bid : NaN, ask: ask > 0 ? ask : NaN, pct: +a.sell.percentile || NaN };
+  }
+}
+
+async function loadBook(id) {
+  const myGen = gen, seen = new Set(), orders = [];
+  let page = 1, pages = 1;
+  do {
+    const r = await getJSON(`${ESI}/markets/${REGION}/orders/?type_id=${id}&order_type=all&page=${page}`);
+    for (const o of r.json) if (!seen.has(o.order_id)) { seen.add(o.order_id); orders.push(o); }   // pages can overlap while the book changes
+    pages = Math.min(r.pages, 10); page++;
+  } while (page <= pages);
+  const here = orders.filter(o => o.location_id === STATION);
+  const sells = here.filter(o => !o.is_buy_order).sort((a, b) => a.price - b.price);
+  const buys = here.filter(o => o.is_buy_order).sort((a, b) => b.price - a.price);
+  const ask = sells.length ? sells[0].price : NaN, bid = buys.length ? buys[0].price : NaN;
+  // "Average of sell orders": volume-weighted, ignoring troll listings priced over 2x the lowest ask.
+  const sane = sells.filter(o => o.price <= ask * 2);
+  const units = sane.reduce((s, o) => s + o.volume_remain, 0);
+  const avg = units ? sane.reduce((s, o) => s + o.price * o.volume_remain, 0) / units : NaN;
+  const near = sells.filter(o => o.price <= ask * 1.02).reduce((s, o) => s + o.volume_remain, 0);
+  const buyUnits = buys.filter(o => o.price >= bid * 0.9).reduce((s, o) => s + o.volume_remain, 0);
+  // Keep the price ladder so "units ahead of you" can be measured at any price, not just the current ask.
+  const ladder = sells.map(o => [o.price, o.volume_remain]);
+  BOOK[id] = { bid, ask, avg, sellUnits: units, nearUnits: near, ladder, buyUnits, sellN: sells.length, buyN: buys.length, t: Date.now(), gen: myGen };
+}
+
+const HIST_TTL = 6 * 3600e3;       // ESI updates history once a day; 6 h is plenty, and a tab left open for days still refetches
+async function loadHist(id) {
+  const key = "ledger.h." + id, c = store.get(key);
+  if (c && Date.now() - c.t < HIST_TTL) { setHist(id, c.d, c.t); return; }
+  const { json } = await getJSON(`${ESI}/markets/${REGION}/history/?type_id=${id}`);
+  setHist(id, json.slice(-30), Date.now());
+  store.set(key, { t: HISTT[id], d: HIST[id] });
+}
+function setHist(id, d, t) {
+  HIST[id] = d; HISTT[id] = t;
+  if (d.length && d[d.length - 1].date > HDAY) HDAY = d[d.length - 1].date;
+}
+
+// Small work queue. Failed keys wait in FAIL (see above) instead of being re-queued by every redraw.
+const queue = []; let active = 0, done = 0, total = 0, pumpTimer = null, retryTimer = null;
+function blocked(key) { const f = FAIL.get(key); return !!f && (f.gaveUp || f.next > Date.now()); }
+function wantBook(id) {
+  const k = "b" + id;
+  if ((BOOK[id] && BOOK[id].gen === gen) || pending.has(k) || blocked(k)) return;
+  pending.add(k); queue.push(["b", id]); total++;
+}
+function wantHist(id) {
+  const k = "h" + id;
+  if ((HIST[id] && Date.now() - HISTT[id] < HIST_TTL) || pending.has(k) || blocked(k)) return;
+  pending.add(k); queue.push(["h", id]); total++;
+}
+function want(ids) { for (const id of ids) if (id != null) { wantBook(id); wantHist(id); } pump(); }
+function wantHists(ids) { for (const id of ids) if (id != null) wantHist(id); pump(); }
+
+function pump() {
+  const wait = heldUntil() - Date.now();
+  if (wait > 0) {                              // global pause: come back when it ends, start nothing now
+    if (!pumpTimer) pumpTimer = setTimeout(() => { pumpTimer = null; pump(); }, wait + 50);
+    status(); return;
+  }
+  while (active < MAX_ACTIVE && queue.length) {
+    const [k, id] = queue.shift(), key = k + id; active++;
+    (k === "b" ? loadBook(id) : loadHist(id))
+      .then(() => { FAIL.delete(key); consec = 0; penalty = 0; })
+      .catch(e => onFail(key, e))
+      .finally(() => { active--; done++; pending.delete(key); status(); soon(); pump(); });
+  }
+  status();
+}
+function onFail(key, e) {
+  const now = Date.now(), f = FAIL.get(key) || { tries: 0 };
+  f.tries++;
+  f.next = now + Math.min(BACKOFF_FIRST * 2 ** (f.tries - 1), BACKOFF_CAP);     // 60 s, 120 s, 240 s ... capped at 5 min
+  if (e.waitSec) f.next = Math.max(f.next, now + e.waitSec * 1000);
+  f.gaveUp = f.tries >= MAX_TRIES;                                               // stays given up until the user presses Refresh
+  FAIL.set(key, f); consec++;
+  console.warn("[ledger]", e.message, `(try ${f.tries}/${MAX_TRIES})`);
+  if (e.waitSec) rateHold = Math.max(rateHold, now + e.waitSec * 1000);          // 420 / 429: everyone waits as long as ESI asked
+  else if (consec >= 5 && now >= breakerHold) {                                  // a run of failures: pause everything, doubling up to 5 min
+    penalty = Math.min(penalty ? penalty * 2 : 15, 300); breakerHold = now + penalty * 1000;
+  }
+  scheduleRetry();
+}
+// One timer wakes up when the earliest failed key (or the global pause) is due, then asks for whatever is still missing.
+function scheduleRetry() {
+  clearTimeout(retryTimer); retryTimer = null;
+  const dues = [...FAIL.values()].filter(f => !f.gaveUp).map(f => f.next);
+  if (!dues.length) return;
+  const at = Math.max(Math.min(...dues), heldUntil());
+  retryTimer = setTimeout(() => { retryTimer = null; fetchNeeded(); scheduleRetry(); }, Math.max(1000, at - Date.now()) + 50);
+}
+function retryKey(kind, id) { FAIL.delete(kind + id); consec = 0; fetchNeeded(); status(); }
+
+// ---------- prices & derived values ----------
+// Once a book has loaded we trust it, including an empty side (NaN). The snapshot is only a stand-in until then.
+function bidOf(id) { return BOOK[id] ? BOOK[id].bid : AGG[id]?.bid ?? NaN; }
+function askOf(id) { return BOOK[id] ? BOOK[id].ask : AGG[id]?.ask ?? NaN; }
+function avgOf(id) { return BOOK[id] ? BOOK[id].avg : AGG[id]?.pct ?? NaN; }   // fuzzwork 5% percentile until the book loads
+function px(id, basis = S.basis) { if (id == null) return NaN; return basis === "buy" ? bidOf(id) : basis === "sell" ? askOf(id) : avgOf(id); }
+
+function matsPerUnit(id) { const t = item(id); return t.m.reduce((s, [, q]) => s + q, 0) / t.p; }
+// Raw units that one compressed unit stands for (1 since the 2021 compression rework, but derived, not assumed).
+function ratio(rawId, compId) { return matsPerUnit(compId) / matsPerUnit(rawId); }
+
+// Value of reprocessing one unit: outputs at `basis`, times yield, minus the reprocessing tax.
+// NaN if any output is unpriced or is missing from the bundle (the Flawed deep-space ores), because a partial sum would understate it.
+function refineUnit(id, basis = S.basis) {
+  const t = item(id); let s = 0;
+  for (const [m, q] of t.m) { if (!I[m]) return NaN; const p = px(m, basis); if (isNaN(p)) return NaN; s += q * p; }
+  return s * (S.yield / 100) * (1 - S.rtax / 100) / t.p;
+}
+
+let veldCache = null;   // cleared at the start of every render
+function veldM3(kind) {
+  veldCache ??= {};
+  if (veldCache[kind] === undefined) { const r = routeSet(VELD, S.basis); veldCache[kind] = r[KINDS.findIndex(([k]) => k === kind)].val / item(VELD).v; }
+  return veldCache[kind];
+}
+function metricOf(valuePerRawUnit, rawId, kind) {
+  if (isNaN(valuePerRawUnit)) return NaN;
+  if (S.metric === "unit") return valuePerRawUnit;
+  const m3 = valuePerRawUnit / item(rawId).v;
+  return S.metric === "m3" ? m3 : 100 * m3 / veldM3(kind);
+}
+
+// ---------- history stats ----------
+// ESI history skips days with no trades, so "the last 7 records" can span a month. We use calendar days instead:
+// records dated inside the window, divided by the window length (missing days count as zero volume).
+const STATS = new Map();   // cache: id -> {h, day, val}; recomputed only when the history or the reference day changes
+const dayStr = (day, back) => { const d = new Date(day + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() - back); return d.toISOString().slice(0, 10); };
+function histStats(id) {
+  const h = HIST[id]; if (!h) return null;
+  const c = STATS.get(id); if (c && c.h === h && c.day === HDAY) return c.val;
+  const day = HDAY || dayStr(new Date().toISOString().slice(0, 10), 1);
+  const inWin = n => { const from = dayStr(day, n - 1); return h.filter(d => d.date >= from && d.date <= day); };
+  const vol = a => a.reduce((s, d) => s + d.volume, 0);
+  const vwap = a => { const v = vol(a); return v ? a.reduce((s, d) => s + d.average * d.volume, 0) / v : NaN; };
+  const w7 = inWin(7), w30 = inWin(30), p7 = vwap(w7), p30 = vwap(w30);
+  const val = { vol7: vol(w7) / 7, vol30: vol(w30) / 30, p7, p30, trend: p7 / p30 - 1,
+                y: h.length ? h[h.length - 1] : null, days: h.length, tradeDays7: w7.length };
+  STATS.set(id, { h, day: HDAY, val });
+  return val;
+}
+
+// ---------- liquidity gate ----------
+// A price is "thin" (unusable for ranking) when the item has no history, no trades in the last 7 calendar days,
+// or (for Jita buy) its best bid is under 30% of the 7-day traded average. That catches the lone 1 ISK / 10,000 ISK
+// bids nobody trades against. Thin items are greyed and sorted below real markets, never hidden.
+const THIN_BID = 0.30;
+const OK = { s: "ok" };
+function marketState(id, basis = "buy") {
+  if (!HIST[id]) return FAIL.has("h" + id) ? { s: "thin", why: "no trade history available" } : { s: "wait", why: "checking liquidity" };
+  const st = histStats(id);
+  if (st.vol7 === 0) return { s: "thin", why: "no trades in the last 7 days" };
+  if (basis === "buy") {
+    const bid = bidOf(id);
+    if (isNaN(bid)) return { s: "thin", why: "no buy orders" };
+    if (st.p7 > 0 && bid < THIN_BID * st.p7) return { s: "thin", why: "best buy order is under 30% of the 7-day average" };
+  }
+  return OK;
+}
+const bidJunk = id => { const st = histStats(id), bid = bidOf(id); return !!st && st.p7 > 0 && bid < THIN_BID * st.p7; };
+function combine(states) {
+  const thin = states.find(x => x.s === "thin"); if (thin) return thin;
+  return states.find(x => x.s === "wait") || OK;
+}
+function matsState(id, basis) { return combine(item(id).m.filter(([m]) => I[m]).map(([m]) => marketState(m, basis))); }
+
+// The three ways to turn one unit of `id` into ISK. Fixed order = KINDS; N/A routes have val NaN.
+function routeSet(id, basis = "buy") {
+  const t = item(id), v = variantFor(id), hasComp = v && v.comp && v.raw === id;
+  return [
+    { k: "raw", val: px(id, basis), st: marketState(id, basis) },
+    { k: "comp", val: hasComp ? px(v.comp, basis) / ratio(v.raw, v.comp) : NaN, st: hasComp ? marketState(v.comp, basis) : OK },
+    { k: "ref", val: t.m.length ? refineUnit(id, basis) : NaN, st: t.m.length ? matsState(id, basis) : OK },
+  ];
+}
+// Best route, preferring liquid ones. state: ok = real market, wait = history still loading, thin = nothing liquid.
+function pickRoute(routes) {
+  const have = routes.filter(r => !isNaN(r.val));
+  if (!have.length) return null;
+  const ok = have.filter(r => r.st.s === "ok"), pool = ok.length ? ok : have;
+  const best = pool.reduce((a, b) => b.val > a.val ? b : a);
+  return { ...best, state: ok.length ? "ok" : have.some(r => r.st.s === "wait") ? "wait" : "thin", why: best.st.why };
+}
+
+// ---------- tick sizes & recommendation ----------
+// EVE prices new orders to 4 significant figures. tickUnit(p) is the smallest step allowed at price p.
+function tickUnit(p) { return p <= 0 ? 0.01 : Math.max(0.01, Math.pow(10, Math.floor(Math.log10(p)) - 3)); }
+function tickRound(p) { const u = tickUnit(p); return Math.round(p / u) * u; }
+function undercut(ask) { let p = Math.floor(ask / tickUnit(ask) + 1e-9) * tickUnit(ask); if (p >= ask) p -= tickUnit(ask); return Math.max(0.01, p); }
+
+function confidenceOf(daysOfSupply, trend, vol7) {
+  // How sure we are the recommended listing fills in reasonable time.
+  // Tuned for a solo seller who checks orders about once a day and won't babysit undercut wars.
+  // vol7 is units per calendar day over the last 7 days (quiet days count as zero).
+  if (!vol7 || vol7 < 1) return "Low";                 // almost nothing trades: a listing may sit for weeks
+  if (trend < -0.07) return "Low";                     // falling price: you'll be undercut while logged off
+  if (daysOfSupply > 3) return "Low";                  // over 3 days of sales already listed ahead of you
+  if (daysOfSupply <= 1 && trend >= -0.03) return "High"; // fills within about a day, price steady or rising
+  return "Medium";                                     // includes "order book not loaded yet" (NaN days)
+}
+const CONF_RANK = { Low: 0, Medium: 1, High: 2 };
+
+function recommend(id) {
+  const b = BOOK[id], h = histStats(id), { tax, broker } = fees();
+  const bid = bidOf(id), ask = askOf(id), why = [];
+  const none = (msg) => ({ action: "none", why: [msg], conf: "Low", edge: NaN, instantNet: NaN, listNet: NaN, days: NaN, bid, ask });
+  if (isNaN(bid) && isNaN(ask)) return none("No orders for this item in Jita 4-4 right now.");
+  if (h && h.vol7 === 0) return none("Illiquid: nothing has traded in the last 7 days (The Forge). A listing could sit indefinitely, so no price is suggested.");
+  if (isNaN(ask) && !h) return none("Nobody is selling in Jita 4-4, and the trade history has not loaded, so there is nothing to price against.");
+
+  let price, fromAverage = false;
+  if (isNaN(ask)) {
+    price = tickRound(Math.max(h.p7 * 1.05, isNaN(bid) ? 0 : bid * 1.1)); fromAverage = true;
+    why.push("Nobody is selling in Jita 4-4. Listing about 5% over the 7-day average (or 10% over the best buy).");
+  } else {
+    price = undercut(ask);
+    why.push(`Undercut the lowest ask (${fmt(ask)}) by one price step.`);
+    if (h && h.vol7 > 0 && ask > h.p7 * 1.15) {
+      price = tickRound(Math.max(h.p7 * 1.05, isNaN(bid) ? 0 : bid * 1.01)); fromAverage = true;
+      why.push(`The lowest ask is ${pctf(ask / h.p7 - 1)} over the 7-day traded average, so listings there are not clearing. Listing near the average instead.`);
+    }
+  }
+  // A junk bid (far below normal prices) is treated like an empty buy side: selling to it is not a realistic option.
+  const junk = !isNaN(bid) && bidJunk(id), usableBid = !isNaN(bid) && !junk;
+  const instantNet = usableBid ? bid * (1 - tax) : NaN;
+  const listNet = price * (1 - tax - broker);
+  const edge = usableBid ? listNet / instantNet - 1 : NaN;
+  // Days of supply: units listed at or up to 2% above our price, divided by daily volume.
+  const ahead = b ? b.ladder.filter(([p]) => p <= price * 1.02).reduce((s, [, v]) => s + v, 0) : NaN;
+  const days = h && h.vol7 > 0 && b ? ahead / h.vol7 : NaN;
+
+  let action = "list";
+  if (isNaN(bid)) why.push("No buy orders: listing is the only way to sell.");
+  else if (junk) why.push(`The best buy order (${fmt(bid)}) is far below the 7-day average, so selling to buy orders is not realistic. Listing is the way to sell.`);
+  else if (edge < 0.005) { action = "instant"; why.push(`After broker fee and tax a listing nets ${pctf(edge)} vs selling to the best buy order now. Not worth the wait.`); }
+  else why.push(`A listing nets ${pctf(edge)} more per unit than selling to buy orders, after ${pctp(broker)} broker and ${pctp(tax)} tax.`);
+  if (ahead === 0) why.push("No competing sell orders at this price.");
+  else if (!isNaN(days)) why.push(days > 7 ? `Heavy sell wall: about ${days.toFixed(1)} days of Forge volume is listed at or near this price. Expect a slow fill and undercutting.`
+                                            : `About ${days.toFixed(1)} days of Forge volume is listed at or near this price.`);
+  if (h) {
+    if (h.trend < -0.05) why.push(`Falling: 7-day average is ${pctf(h.trend)} vs 30-day. Undercutters will chase it down.`);
+    else if (h.trend > 0.05) why.push(`Rising: 7-day average is ${pctf(h.trend)} vs 30-day. You can be patient.`);
+    if (h.vol7 / h.vol30 < 0.6) why.push("Volume this week is well below the 30-day norm.");
+  } else why.push("Daily history not loaded yet.");
+  if (action === "list" && h && h.trend < -0.05 && days > 3) { action = "thin"; why.push("Falling price plus a deep sell wall: selling to buy orders may beat waiting."); }
+
+  let conf = confidenceOf(days, h ? h.trend : 0, h ? h.vol7 : 0);
+  const cap = c => { if (CONF_RANK[conf] > CONF_RANK[c]) conf = c; };
+  if (fromAverage || (h && h.y && price > h.y.highest)) cap("Medium");   // priced off an average, or above anything that traded yesterday
+  if (isNaN(bid) || isNaN(ask) || junk) cap("Low");                      // one side of the book is missing or fake
+  return { action, price, instantNet, listNet, edge, days, conf, why, bid, ask };
+}
+
+// ---------- formatting ----------
+function fmt(n, sig) {
+  if (n == null || isNaN(n)) return "—";
+  const a = Math.abs(n);
+  if (a >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (a >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (a >= 1e4) return (n / 1e3).toFixed(1) + "k";
+  if (a >= 100) return n.toFixed(sig ?? 0);
+  return n.toFixed(2);
+}
+const num = (n, d = 0) => !isFinite(n) ? "—" : n.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+const isk = n => isFinite(n) ? num(n, 2) : "—";
+// Signed percent for edges and trends. Non-finite shows a dash; anything past 1000% shows as a cap, not 22,000,000%.
+const pctf = (x, d = 1) => !isFinite(x) ? "—" : Math.abs(x) > 10 ? (x > 0 ? ">1000%" : "<-1000%") : (x > 0 ? "+" : "") + (x * 100).toFixed(d) + "%";
+const pctp = (x, d = 2) => isNaN(x) ? "—" : (x * 100).toFixed(d) + "%";   // unsigned, for fees and spreads
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+// One fixed number of decimals per metric so digits line up down a column.
+const metricFmt = v => isNaN(v) ? "—" : S.metric === "pct" ? num(v, 0) + "%" : S.metric === "m3" ? num(v, 1) : num(v, 2);
+const ROUTE = { raw: "Sell raw", comp: "Compress & sell", ref: "Reprocess" };
+
+// Heat shading: square-root scale, clamped at the 95th percentile so a few outliers don't wash out the rest.
+function heater(values) {
+  const v = values.filter(x => x > 0).sort((a, b) => a - b);
+  const p95 = v.length ? v[Math.floor(0.95 * (v.length - 1))] : 1;
+  return x => isNaN(x) || x <= 0 ? 0 : 0.05 + 0.4 * Math.sqrt(Math.min(x, p95) / p95);
+}
+
+// ---------- views ----------
+const TABS = [
+  { id: "ores", name: "Ores", sections: ["Standard ores"] },
+  { id: "moon", name: "Moon ores", sections: ["Moon ores"] },
+  { id: "other", name: "Trig · Anomaly · Deep space", sections: ["Triglavian ores", "Anomaly & nullsec ores", "Deep-space ores"] },
+  { id: "ice", name: "Ice", sections: [] },
+  { id: "best", name: "Best per m³", sections: [] },
+  { id: "minerals", name: "Minerals & materials", sections: [] },
+  { id: "haul", name: "My haul", sections: [] },
+];
+const ORE_TABS = ["ores", "moon", "other"];
+const TIER_NAMES = {
+  "Standard ores": ["Grade I", "Grade II", "Grade III", "Grade IV"],
+  "Moon ores": ["Base", "+15%", "+100%"],
+  "Triglavian ores": ["Grade I", "Grade II", "Grade III"],
+  "Anomaly & nullsec ores": ["Grade I", "Grade II", "Grade III", "Grade IV"],
+  "Deep-space ores": ["Flawed", "X-Grade", "Z-Grade"],
+  "Ice": ["Base", "IV-Grade"],
+};
+const KINDS = [["raw", "Raw"], ["comp", "Comp"], ["ref", "Refined"]];
+const section = name => DATA.sections.find(s => s.name === name);
+const notTraded = id => AGG[id] && isNaN(AGG[id].bid) && isNaN(AGG[id].ask) && !(BOOK[id] && (isFinite(BOOK[id].bid) || isFinite(BOOK[id].ask)));
+
+function cellHtml(x, id, st, best, suffix, extra = "") {   // id may be null (no compressed form) only when x is NaN
+  if (isNaN(x)) return `<span class="cell na">—</span>`;
+  const thin = st && st.s === "thin";
+  return `<button type="button" class="cell ${best ? "best" : ""} ${thin ? "thin" : ""}" data-id="${id}" ${extra} title="${esc(item(id).n + suffix)}${thin ? " · thin market: " + st.why : ""}">${metricFmt(x)}</button>`;
+}
+
+function matrix(title, rows, tierNames, note) {
+  const nT = tierNames.length;
+  const rs = rows.map(r => r.tiers.slice(0, nT).map(t => t ? routeSet(t.raw, S.basis) : null));
+  const vals = rs.map((row, ri) => row.map((set, ti) => set ? set.map((r, ki) => metricOf(r.val, rows[ri].tiers[ti].raw, KINDS[ki][0])) : null));
+  const heat = heater(rs.flatMap((row, ri) => row.flatMap((set, ti) => set ? set.map((r, ki) => r.st.s === "thin" ? NaN : vals[ri][ti][ki]) : [])));
+  let h = `<section class="block"><div class="bhead"><h2>${esc(title)}</h2>${note ? `<span class="note">${note}</span>` : ""}</div>
+  <div class="scroll"><table><thead><tr class="tiers"><th class="rowh" rowspan="2">${unitLabel()}</th>${tierNames.map(n => `<th colspan="3">${n}</th>`).join("")}</tr>
+  <tr>${tierNames.map(() => KINDS.map(([k, n]) => `<th class="sub ${k}">${n}</th>`).join("")).join("")}</tr></thead><tbody>`;
+  rows.forEach((r, ri) => {
+    h += `<tr><td class="rowh">${r.group ? `<span class="grp">${r.group}</span>` : ""}${esc(r.name)}</td>`;
+    for (let ti = 0; ti < nT; ti++) {
+      const t = r.tiers[ti], set = rs[ri][ti], v = vals[ri][ti];
+      if (!t) { h += `<td class="c t0" colspan="3"><span class="cell na">—</span></td>`; continue; }
+      const pick = pickRoute(set), bestK = pick ? KINDS.findIndex(([k]) => k === pick.k) : -1;
+      KINDS.forEach(([k], ki) => {
+        const x = v[ki], id = k === "comp" ? t.comp : t.raw, thin = set[ki].st.s === "thin";
+        h += `<td class="c ${ki === 0 ? "t0" : ""}" style="background:rgba(var(--heat),${(thin ? 0 : heat(x)).toFixed(3)})">` +
+             cellHtml(x, id, set[ki].st, ki === bestK, k === "ref" ? " (refined)" : "", `data-raw="${t.raw}"`) + `</td>`;
+      });
+    }
+    h += `</tr>`;
+  });
+  return h + `</tbody></table></div></section>`;
+}
+// One row per grade, with the in-game item name, grouped by ore family.
+function gradeTable(title, rows, tierNames, note) {
+  const list = [];
+  rows.forEach(r => r.tiers.slice(0, tierNames.length).forEach((t, ti) => {
+    if (!t) return;
+    const set = routeSet(t.raw, S.basis), v = set.map((x, ki) => metricOf(x.val, t.raw, KINDS[ki][0]));
+    const base = r.tiers.find(Boolean);
+    list.push({ r, t, ti, set, v, first: t === base, bonus: matsPerUnit(t.raw) / matsPerUnit(base.raw) - 1 });
+  }));
+  const heat = heater(list.flatMap(x => x.v.map((n, ki) => x.set[ki].st.s === "thin" ? NaN : n)));
+  let h = `<section class="block"><div class="bhead"><h2>${esc(title)}</h2>${note ? `<span class="note">${note}</span>` : ""}</div>
+  <div class="scroll"><table class="gt"><thead><tr><th class="rowh">Ore (in-game name)</th><th class="lft">Grade</th><th class="lft">Yield vs base</th>
+  ${KINDS.map(([k, n]) => `<th class="sub ${k}">${n} · ${unitShort()}</th>`).join("")}<th class="lft">Best route</th></tr></thead><tbody>`;
+  for (const x of list) {
+    const pick = pickRoute(x.set), bestK = pick ? KINDS.findIndex(([k]) => k === pick.k) : -1, thinRow = pick && pick.state === "thin";
+    h += `<tr class="${x.first ? "fam" : ""} ${thinRow ? "thin" : ""}"><td class="rowh">${x.r.group ? `<span class="grp">${x.r.group}</span>` : ""}${esc(item(x.t.raw).n)}</td>
+      <td class="lft">${tierNames[x.ti]}</td><td class="lft num">${x.bonus > 0.001 ? pctf(x.bonus, 0) : "—"}</td>`;
+    KINDS.forEach(([k], ki) => {
+      const n = x.v[ki], id = k === "comp" ? x.t.comp : x.t.raw, thin = x.set[ki].st.s === "thin";
+      h += `<td class="c" style="background:rgba(var(--heat),${(thin ? 0 : heat(n)).toFixed(3)})">` + cellHtml(n, id, x.set[ki].st, ki === bestK, k === "ref" ? " (refined)" : "") + `</td>`;
+    });
+    h += `<td class="lft">${!pick ? (notTraded(x.t.raw) ? "Not traded in Jita 4-4" : "—") : ROUTE[pick.k] + (pick.state === "thin" ? ` <span class="pill thin" title="${esc(pick.why)}">thin market</span>` : "")}</td></tr>`;
+  }
+  return h + `</tbody></table></div></section>`;
+}
+function unitShort() { return S.metric === "m3" ? "ISK/m³" : S.metric === "unit" ? "ISK/unit" : "% Veld"; }
+function oreBlock(title, rows, tierNames, note) { return (S.layout === "grid" ? matrix : gradeTable)(title, rows, tierNames, note); }
+function unitLabel() { return S.metric === "m3" ? "ISK per raw m³" : S.metric === "unit" ? "ISK per raw unit" : "vs Veldspar"; }
+
+function legend() {
+  return `<div class="legend"><span><i style="background:var(--accent)"></i>Raw: sell the ore as mined</span><span><i style="background:var(--cool)"></i>Comp: compress, then sell (shown per raw unit; needs a compression service)</span><span><i style="background:var(--good)"></i>Refined: reprocess at ${S.yield}% yield${S.rtax ? `, ${S.rtax}% tax` : ""} and sell the output</span><span>Accent bar = best route for that grade</span><span>Grey italic = thin market</span></div>`;
+}
+
+function marketTable(title, ids, note) {
+  let h = `<section class="block"><div class="bhead"><h2>${esc(title)}</h2>${note ? `<span class="note">${note}</span>` : ""}</div><div class="scroll"><table class="mt"><thead><tr>
+    <th class="rowh">Item</th><th>Jita buy</th><th>Jita sell</th><th>Sell avg</th><th>Spread</th><th>Vol/day (7d, Forge)</th><th>7d vs 30d</th><th>List at</th><th>Advice</th></tr></thead><tbody>`;
+  for (const id of ids) {
+    const bid = bidOf(id), ask = askOf(id), st = histStats(id), r = recommend(id), ms = marketState(id, "buy");
+    const spread = bidJunk(id) ? NaN : (ask - bid) / ask;
+    const tr = st ? st.trend : NaN;
+    const pill = { list: ["list", "List it"], instant: ["instant", "Sell now"], thin: ["thin", "Judgement call"], none: ["none", "No market"] }[r.action];
+    h += `<tr data-id="${id}" tabindex="0" class="${ms.s === "thin" ? "thin" : ""}"><td class="rowh">${esc(item(id).n)}</td><td>${isk(bid)}</td><td>${isk(ask)}</td><td>${isk(avgOf(id))}</td>
+      <td>${isNaN(spread) ? "—" : (spread * 100).toFixed(1) + "%"}</td><td>${st ? fmt(st.vol7) : FAIL.has("h" + id) ? "n/a" : "…"}</td>
+      <td class="${tr > 0.02 ? "up" : tr < -0.02 ? "down" : ""}">${pctf(tr)}</td><td>${r.price ? isk(r.price) : "—"}</td>
+      <td><span class="pill ${pill[0]}">${pill[1]}</span></td></tr>`;
+  }
+  return h + `</tbody></table></div></section>`;
+}
+
+// Every ore variant with its best instant-sale route at Jita buy, liquid markets first, then still-checking, then thin.
+function bestRows(secFilter) {
+  const out = [];
+  for (const sec of DATA.sections) {
+    if (secFilter && sec.name !== secFilter) continue;
+    for (const r of sec.rows) r.tiers.forEach(t => {
+      if (!t) return;
+      const pick = pickRoute(routeSet(t.raw, "buy"));
+      if (!pick) return;
+      out.push({ name: item(t.raw).n, sec: sec.name, id: t.raw, m3: pick.val / item(t.raw).v, unit: pick.val, route: ROUTE[pick.k], state: pick.state, why: pick.why });
+    });
+  }
+  const order = { ok: 0, wait: 1, thin: 2 };
+  return out.sort((a, b) => order[a.state] - order[b.state] || b.m3 - a.m3);
+}
+
+function bestList() {
+  const all = bestRows(S.bfilter), top = all.find(o => o.state === "ok")?.m3 || 1;
+  const opts = ['<option value="">All families</option>'].concat(DATA.sections.map(s => `<option value="${esc(s.name)}"${S.bfilter === s.name ? " selected" : ""}>${esc(s.name)}</option>`)).join("");
+  let h = `<section class="block"><div class="bhead"><h2>Every ore, ranked by ISK per m³ mined</h2><span class="pill none">Uses Jita buy</span>
+    <span class="note">Instant-sale value of a full ore hold today. Route is the best of selling raw, compressing, or reprocessing at ${S.yield}%${S.rtax ? ` and ${S.rtax}% tax` : ""}. Thin markets (flagged) sort below every real market.</span></div>
+  <div class="ctl" style="max-width:260px"><label for="bfilter">Family</label><select id="bfilter">${opts}</select></div>
+  <div class="scroll"><table class="mt"><thead><tr><th class="rowh">#&nbsp;&nbsp;Ore</th><th>Family</th><th>ISK / m³</th><th>ISK / unit</th><th>Best route</th><th style="width:30%">vs top</th></tr></thead><tbody>`;
+  all.forEach((o, i) => {
+    const thin = o.state !== "ok", flag = o.state === "thin" ? ` <span class="pill thin" title="${esc(o.why)}">thin market</span>` : o.state === "wait" ? ` <span class="pill none">checking…</span>` : "";
+    h += `<tr data-id="${o.id}" tabindex="0" class="${thin ? "thin" : ""}"><td class="rowh"><span class="muted num">${String(i + 1).padStart(3, " ")}</span>&nbsp;&nbsp;${esc(o.name)}${flag}</td><td class="txt">${esc(o.sec)}</td><td>${num(o.m3, 1)}</td><td>${isk(o.unit)}</td><td class="txt">${o.route}</td>
+      <td>${thin ? "" : `<div style="height:8px;border-radius:2px;background:rgba(var(--heat),.75);width:${Math.max(1, 100 * o.m3 / top).toFixed(1)}%"></div>`}</td></tr>`;
+  });
+  return h + `</tbody></table></div></section>`;
+}
+
+// One-glance answer above the ore tables: what to mine right now, from liquid markets only.
+function verdictStrip() {
+  const all = bestRows(""), live = all.filter(o => o.state === "ok"), waiting = all.filter(o => o.state === "wait").length;
+  const btn = o => `<button type="button" data-id="${o.id}">${esc(o.name)} via ${o.route}, <span class="num">${num(o.m3, 1)}</span> ISK/m³</button>`;
+  let h = `<div class="verdict"><span class="lbl">Best to mine now · per m³, instant sale at Jita buy, liquid markets only</span>`;
+  if (!live.length) h += `<div class="line">${waiting ? "Checking which markets are liquid…" : aggTime ? "No liquid ore market found." : "Waiting for prices…"}</div>`;
+  else {
+    h += `<div class="line top1"><button type="button" data-id="${live[0].id}">${esc(live[0].name)} via ${live[0].route}, <span class="num">${num(live[0].m3, 1)}</span> ISK/m³</button></div>`;
+    h += `<div class="runners"><span>Then:</span>${live.slice(1, 4).map(btn).join("")}</div>`;
+  }
+  if (waiting) h += `<span class="note">Still checking ${waiting} market${waiting > 1 ? "s" : ""}: the ranking may change.</span>`;
+  return h + `</div>`;
+}
+
+// ---------- ids to fetch ----------
+function oreIds(rows) { const ids = []; rows.forEach(r => r.tiers.forEach(t => { if (t) { ids.push(t.raw); if (t.comp) ids.push(t.comp); } })); return ids; }
+const PRODUCT_IDS = Object.values(DATA.products).flat();
+const HIST_ALL = [...new Set(DATA.sections.flatMap(s => oreIds(s.rows)).concat(oreIds(DATA.ice), PRODUCT_IDS))];   // the liquidity gate needs every ore's history
+function idsForTab(tab) {
+  if (tab.id === "ice") return oreIds(DATA.ice);
+  if (tab.id === "minerals") return PRODUCT_IDS;
+  return tab.sections.flatMap(n => oreIds(section(n).rows));
+}
+function currentTab() { return TABS.find(t => t.id === S.tab) || TABS[0]; }
+function neededIds() {
+  const tab = currentTab(), ids = tab.id === "haul" ? haulIds() : tab.id === "best" ? [] : idsForTab(tab);
+  if (openId) { ids.push(openId); const t = item(openId); if (t.m.length) ids.push(...t.m.map(([m]) => m).filter(m => I[m])); }
+  return ids;
+}
+// Everything the current view needs. Safe to call as often as you like: blocked, pending and fresh keys are skipped.
+function fetchNeeded() {
+  want(PRODUCT_IDS);            // minerals and moon materials feed every Refined column
+  want(neededIds());
+  wantHists(HIST_ALL);          // histories only (cached 6 h): gives the liquidity gate and the verdict their data
+}
+
+// ---------- My haul ----------
+// Paste from the EVE inventory ("Name<TAB>Qty<TAB>..."), or type "Name 1234" / "1234 x Name".
+const norm = s => s.toLowerCase().replace(/\s+/g, " ").trim();
+const NAME_INDEX = new Map(Object.values(I).map(t => [norm(t.n), t.id]));
+// Whole numbers only. "12,345", "12.345", "12 345" and "12'345" are thousands groups; "1.5" is rejected.
+function parseQty(s) {
+  s = s.replace(/[  ]/g, " ").trim();
+  if (/^\d+$/.test(s)) return +s;
+  if (/^\d{1,3}([.,' ]\d{3})+$/.test(s)) return +s.replace(/[.,' ]/g, "");
+  return NaN;
+}
+function parseLine(line) {
+  line = line.replace(/ /g, " ").trim();
+  if (!line) return null;
+  if (line.includes("\t")) {
+    const cols = line.split("\t").map(c => c.trim()), id = NAME_INDEX.get(norm(cols[0]));
+    if (id == null) return { bad: line, why: "Unknown item name" };
+    for (const c of cols.slice(1)) {
+      if (!c) continue;
+      const q = parseQty(c);
+      if (!isNaN(q)) return q > 0 ? { id, qty: q } : { bad: line, why: "Quantity is zero" };
+      if (/^[\d.,' ]+$/.test(c)) return { bad: line, why: "Quantity is not a whole number" };
+    }
+    return { id, qty: 1 };                      // EVE leaves the quantity blank for a single item
+  }
+  // Free text: try "1234 x Name", "Name x 1234", "Name 1234", then the bare name (quantity 1).
+  const tries = [
+    [/^(\d[\d.,' ]*?)\s*[x×]\s*(.+)$/i, 2, 1], [/^(.+?)\s*[x×]\s*(\d[\d.,']*)$/i, 1, 2],
+    [/^(.+?)\s+(\d[\d.,' ]*)$/, 1, 2],
+  ];
+  let sawName = false;
+  for (const [re, ni, qi] of tries) {
+    const m = line.match(re); if (!m) continue;
+    const id = NAME_INDEX.get(norm(m[ni])); if (id == null) continue;
+    sawName = true;
+    const q = parseQty(m[qi]);
+    if (isNaN(q)) continue;
+    return q > 0 ? { id, qty: q } : { bad: line, why: "Quantity is zero" };
+  }
+  const id = NAME_INDEX.get(norm(line));
+  if (id != null) return { id, qty: 1 };
+  return { bad: line, why: sawName ? "Quantity is not a whole number" : "Unknown item name" };
+}
+function parseHaul(text) {
+  const byId = new Map(), bad = [];
+  for (const line of text.split(/\r?\n/)) {
+    const p = parseLine(line); if (!p) continue;
+    if (p.bad) bad.push(p); else byId.set(p.id, (byId.get(p.id) || 0) + p.qty);   // two stacks of the same item merge
+  }
+  return { lines: [...byId].map(([id, qty]) => ({ id, qty })), bad };
+}
+let haulParsed = { lines: [], bad: [] };
+const haulIds = () => haulParsed.lines.flatMap(l => { const v = variantFor(l.id); return v && v.comp && v.raw === l.id ? [l.id, v.comp] : [l.id]; });
+
+function haulRows() {
+  return haulParsed.lines.map(({ id, qty }) => {
+    const t = item(id), set = routeSet(id, "buy"), v = variantFor(id);
+    const refUnits = Math.floor(qty / t.p) * t.p;            // reprocessing works in whole batches
+    const val = [qty * set[0].val, qty * set[1].val, t.m.length && refUnits > 0 ? refUnits * set[2].val : NaN];
+    const routes = set.map((r, i) => ({ ...r, val: val[i] }));
+    const pick = pickRoute(routes);
+    const compM3 = v && v.comp && v.raw === id ? qty / ratio(v.raw, v.comp) * item(v.comp).v : qty * t.v;
+    return { id, qty, t, m3: qty * t.v, compM3, routes, pick, leftover: t.m.length ? qty - refUnits : 0, rec: recommend(id) };
+  });
+}
+function renderHaulOut() {
+  const out = $("haulOut"); if (!out) return;
+  const focus = captureFocus(out);
+  haulParsed = parseHaul($("haulIn").value);
+  want(haulIds());
+  const rows = haulRows();
+  let h = "";
+  if (!rows.length) h += `<div class="note">${haulParsed.bad.length ? "" : "Paste your haul above (Ctrl+A, Ctrl+C in the EVE inventory window, then Ctrl+V here)."}</div>`;
+  else {
+    const sum = i => rows.reduce((s, r) => s + (isFinite(r.routes[i].val) ? r.routes[i].val : isFinite(r.routes[0].val) ? r.routes[0].val : 0), 0);   // a route that doesn't apply to a line falls back to selling it as-is
+    const tot = [rows.reduce((s, r) => s + (isFinite(r.routes[0].val) ? r.routes[0].val : 0), 0), sum(1), sum(2)];
+    const mix = rows.reduce((s, r) => s + (r.pick ? r.pick.val : 0), 0);
+    const names = ["Sell everything as-is", "Compress everything, then sell", "Reprocess everything"];
+    const bi = tot.indexOf(Math.max(...tot)), best = tot[bi];
+    const m3 = rows.reduce((s, r) => s + r.m3, 0), cm3 = rows.reduce((s, r) => s + r.compM3, 0);
+    const bb = tot[0] * S.buyback / 100, thinN = rows.filter(r => r.pick && r.pick.state === "thin").length, unpriced = rows.filter(r => !r.pick).length;
+    h += `<div class="scroll"><table class="mt"><thead><tr><th class="rowh">Item</th><th>Qty</th><th>m³</th><th>Sell as-is (Jita buy)</th><th>Compressed</th><th>Reprocessed</th><th>Best route</th><th>List price / unit</th></tr></thead><tbody>`;
+    for (const r of rows) {
+      const thin = r.pick && r.pick.state === "thin", cellV = (i) => isNaN(r.routes[i].val) ? "—" : `<span class="${r.routes[i].st.s === "thin" ? "muted" : ""}">${isk(r.routes[i].val)}</span>`;
+      const bestName = !r.pick ? "No market" : (r.pick.k === "raw" ? (r.routes[1].val >= 0 || r.routes[2].val >= 0 ? "Sell as-is" : "Sell") : ROUTE[r.pick.k]);
+      h += `<tr data-id="${r.id}" tabindex="0" class="${thin ? "thin" : ""}"><td class="rowh">${esc(r.t.n)}${thin ? ` <span class="pill thin" title="${esc(r.pick.why)}">thin market</span>` : ""}</td>
+        <td>${num(r.qty)}</td><td>${num(r.m3, 1)}</td><td>${cellV(0)}</td><td>${cellV(1)}</td><td>${cellV(2)}${r.leftover ? ` <span class="muted" title="Reprocessing works in batches of ${r.t.p}; ${r.leftover} left over are not counted">*</span>` : ""}</td>
+        <td class="txt">${bestName}</td><td>${r.rec.price ? `${isk(r.rec.price)} <span class="muted">${r.rec.conf}</span>` : `<span class="muted">${r.rec.action === "none" ? "no market" : "—"}</span>`}</td></tr>`;
+    }
+    h += `<tr class="tot"><td class="rowh">Total (${rows.length} item${rows.length > 1 ? "s" : ""})</td><td></td><td>${num(m3, 1)}</td><td>${isk(tot[0])}</td><td>${isk(tot[1])}</td><td>${isk(tot[2])}</td><td class="txt">${names[bi].split(" ")[0] === "Sell" ? "Sell" : names[bi].split(" ")[0]}</td><td></td></tr></tbody></table></div>`;
+    h += `<div class="sumbox"><span class="lbl">Best overall route</span><span class="big">${isk(best)} ISK</span><span>${names[bi]}.${mix > best * 1.001 ? ` Picking the best route per line instead gives <b class="num">${isk(mix)}</b>.` : ""}
+      Compressed, this hold takes <span class="num">${num(cm3, 1)}</span> m³ (now <span class="num">${num(m3, 1)}</span> m³).</span>
+      <span>Buyback at ${S.buyback}% of Jita buy would pay <b class="num">${isk(bb)} ISK</b>: selling yourself via the best route is ${best >= bb ? `<b class="up">${isk(best - bb)} ISK more</b>` : `<b class="down">${isk(bb - best)} ISK less</b>`}.</span>
+      ${thinN ? `<span class="note">${thinN} line${thinN > 1 ? "s are" : " is"} a thin market (greyed): treat those values as optimistic.</span>` : ""}${unpriced ? `<span class="note">${unpriced} line${unpriced > 1 ? "s have" : " has"} no price and ${unpriced > 1 ? "are" : "is"} not counted.</span>` : ""}
+      ${rows.some(r => r.leftover) ? `<span class="note">* Reprocessing works in whole batches; leftover units are not counted in the Reprocessed column.</span>` : ""}
+      <span class="note">Totals for Compressed and Reprocessed sell any line that route doesn't apply to as-is.</span></div>`;
+  }
+  if (haulParsed.bad.length) h += `<div class="bad-list"><b>Not recognised (${haulParsed.bad.length}), left out of the totals</b>${haulParsed.bad.map(b => `<div><code>${esc(b.bad)}</code> <span class="muted">· ${b.why}</span></div>`).join("")}</div>`;
+  out.innerHTML = h;
+  restoreFocus(out, focus);
+}
+function buildHaulShell(main) {
+  main.innerHTML = `<section class="block"><div class="bhead"><h2>My haul</h2><span class="note">Paste from the EVE inventory window, or type lines like <code>Veldspar 12,000</code> or <code>5000 x Tritanium</code>. Values use Jita buy, your yield and your reprocessing tax. Remembered on this device.</span></div>
+    <textarea id="haulIn" rows="7" spellcheck="false" aria-label="Haul list" placeholder="Veldspar&#9;10,000&#10;Compressed Scordite II-Grade&#9;500&#10;Tritanium&#9;1,234,567"></textarea>
+    <div class="haulbar"><div class="ctl"><label for="buyback">Buyback % of Jita buy</label><input type="number" id="buyback" min="1" max="100" step="0.5"><span class="hint" id="buybackHint"></span></div>
+      <button class="btn" type="button" id="haulClear">Clear</button></div>
+    <div id="haulOut" style="display:grid;gap:12px"></div></section>`;
+  const ta = $("haulIn"); ta.value = store.get("ledger.haul") || "";
+  ta.addEventListener("input", () => { store.set("ledger.haul", ta.value); renderHaulOut(); });
+  $("haulClear").onclick = () => { ta.value = ""; store.set("ledger.haul", ""); renderHaulOut(); ta.focus(); };
+  wireNum("buyback", "buyback", renderHaulOut);
+}
+
+// ---------- render ----------
+// Focus survives redraws: remember which focusable (by position) had it inside `root`, and refocus the same slot afterwards.
+const FOCUSABLE = "button,[tabindex],input,select,textarea,a[href]";
+function captureFocus(root) {
+  const a = document.activeElement;
+  if (!a || !root.contains(a)) return -1;
+  return [...root.querySelectorAll(FOCUSABLE)].indexOf(a);
+}
+function restoreFocus(root, idx) { if (idx >= 0) root.querySelectorAll(FOCUSABLE)[idx]?.focus({ preventScroll: true }); }
+
+function render() {
+  const tab = currentTab(), main = $("main");
+  veldCache = null;
+  if (tab.id === "haul") {
+    if (main.dataset.view !== "haul") { buildHaulShell(main); main.dataset.view = "haul"; }
+    renderHaulOut();
+  } else {
+    const focus = captureFocus(main);
+    let h = "";
+    if (tab.id === "best") h = bestList();
+    else if (tab.id === "minerals") {
+      h = marketTable("Minerals", DATA.products["Mineral"], "Refined ore output. The \"List at\" price undercuts Jita 4-4 by one price step unless the book looks inflated.")
+        + marketTable("Moon materials", DATA.products["Moon Materials"], "R4 to R64 reprocessing output.")
+        + marketTable("Ice products", DATA.products["Ice Product"], "Isotopes, fuel and stront from refined ice.");
+    } else if (tab.id === "ice") {
+      h = legend() + oreBlock("Ice", DATA.ice, TIER_NAMES.Ice, "One block of ice is 1,000 m³ raw. IV-Grade replaces the old enriched/thick variants.");
+    } else {
+      h = verdictStrip() + legend() + tab.sections.map(n => oreBlock(n, section(n).rows, TIER_NAMES[n],
+        n === "Moon ores" ? "R4 ubiquitous to R64 exceptional. +15% and +100% are the richer variants." :
+        n === "Standard ores" ? "Percent mode is relative to base Veldspar for the same route." : "")).join("");
+    }
+    main.innerHTML = h; main.dataset.view = tab.id;
+    restoreFocus(main, focus);
+  }
+  fetchNeeded();
+  if (openId) renderDossier(openId);
+}
+let t0 = null;
+function soon() { if (!t0) t0 = setTimeout(() => { t0 = null; render(); }, 400); }
+
+// ---------- dossier ----------
+let openId = null, openerIdx = -1;
+function variantFor(id) {
+  const all = DATA.sections.flatMap(s => s.rows).concat(DATA.ice);
+  for (const r of all) for (const t of r.tiers) if (t && (t.raw === id || t.comp === id)) return t;
+  return null;
+}
+function chart(id) {
+  const h = HIST[id];
+  if (!h) return FAIL.has("h" + id) ? `<div class="note">History unavailable. <button class="btn" type="button" data-retry="h${id}">Retry</button></div>` : `<div class="note">Loading 30-day history…</div>`;
+  if (h.length < 2) return `<div class="note">${h.length ? "Only one day" : "No days"} of trades on record for this item in The Forge.</div>`;
+  const W = 520, H = 170, L = 52, R = 8, T = 10, B = 22, VB = 40;
+  const ps = h.flatMap(d => [d.lowest, d.highest]), lo = Math.min(...ps), hi = Math.max(...ps);
+  const vmax = Math.max(...h.map(d => d.volume)) || 1;
+  const x = i => L + (W - L - R) * i / (h.length - 1);
+  const y = p => T + (H - T - B - VB - 6) * (1 - (p - lo) / ((hi - lo) || 1));
+  const bw = Math.max(2, (W - L - R) / h.length - 2);
+  const line = h.map((d, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(d.average).toFixed(1)}`).join("");
+  const band = h.map((d, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(d.highest).toFixed(1)}`).join("") +
+               h.slice().reverse().map((d, j) => `L${x(h.length - 1 - j).toFixed(1)},${y(d.lowest).toFixed(1)}`).join("") + "Z";
+  const bars = h.map((d, i) => { const bh = VB * d.volume / vmax; return `<rect x="${(x(i) - bw / 2).toFixed(1)}" y="${(H - B - bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" fill="var(--cool)" opacity=".55"/>`; }).join("");
+  const last = h[h.length - 1];
+  return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Price and volume history, ${h[0].date} to ${last.date}">
+    <line x1="${L}" x2="${W - R}" y1="${y(hi)}" y2="${y(hi)}" stroke="var(--line)"/><line x1="${L}" x2="${W - R}" y1="${y(lo)}" y2="${y(lo)}" stroke="var(--line)"/>
+    <text x="${L - 6}" y="${y(hi) + 3}" text-anchor="end">${fmt(hi)}</text><text x="${L - 6}" y="${y(lo) + 3}" text-anchor="end">${fmt(lo)}</text>
+    <path d="${band}" fill="rgba(var(--heat),.16)"/><path d="${line}" fill="none" stroke="var(--accent)" stroke-width="1.8"/>
+    <circle cx="${x(h.length - 1)}" cy="${y(last.average)}" r="3.5" fill="var(--accent)"/>
+    ${bars}<text x="${L - 6}" y="${H - B}" text-anchor="end">vol</text>
+    <text x="${L}" y="${H - 6}">${h[0].date.slice(5)}</text><text x="${W - R}" y="${H - 6}" text-anchor="end">${last.date.slice(5)}</text>
+  </svg><div class="legend"><span><i style="background:var(--accent)"></i>Daily average</span><span><i style="background:rgba(var(--heat),.35)"></i>Daily low–high</span><span><i style="background:var(--cool)"></i>Units traded (The Forge, days with trades only)</span></div></div>`;
+}
+function kv(label, v, s) { return `<div class="kv"><span class="lbl">${label}</span><span class="v">${v}</span>${s ? `<span class="s">${s}</span>` : ""}</div>`; }
+
+// Raw / Compressed / Reprocessed side by side for one ore, net of sales tax (and reprocess tax), with the margin to the best.
+function routesBlock(v, tax) {
+  const set = routeSet(v.raw, "buy"), pick = pickRoute(set), vol = item(v.raw).v;
+  const rows = set.map((r, i) => {
+    if (isNaN(r.val)) return `<tr><td>${ROUTE[r.k]}</td><td colspan="3" class="muted" style="text-align:right">${r.k === "comp" ? "no compressed form" : "not available"}</td></tr>`;
+    const net = r.val * (1 - tax), diff = pick ? r.val / pick.val - 1 : 0, thin = r.st.s === "thin";
+    const note = thin ? `thin market: ${r.st.why}` : pick && r.k === pick.k ? "best" : Math.abs(diff) < 0.02 ? "about even" : pctf(diff);
+    return `<tr class="${pick && r.k === pick.k ? "best" : ""} ${thin ? "thin" : ""}"><td>${ROUTE[r.k]}</td><td>${isk(net)}</td><td>${isk(net / vol)}</td><td style="text-align:right;font-family:var(--f-body)">${note}</td></tr>`;
+  }).join("");
+  return `<div style="display:grid;gap:6px"><span class="lbl">Three ways to sell one raw unit, net of ${pctp(tax)} sales tax, at Jita buy</span>
+    <div class="scroll"><table class="reftab"><thead><tr><th>Route</th><th>ISK / unit</th><th>ISK / raw m³</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+
+function renderDossier(id) {
+  const t = item(id), b = BOOK[id], st = histStats(id), r = recommend(id), { tax, broker } = fees();
+  const v = variantFor(id), el = $("dossier"), focus = captureFocus(el);
+  const bid = bidOf(id), ask = askOf(id), isComp = v && v.comp === id;
+  let refine = "";
+  if (t.m.length && !DATA.products["Mineral"].includes(id)) {
+    const rows = t.m.filter(([m]) => I[m]).map(([m, q]) => { const out = q * S.yield / 100 / t.p, p = bidOf(m); return `<tr><td>${esc(item(m).n)}</td><td>${out.toFixed(2)}</td><td>${isk(p)}</td><td>${isk(out * p)}</td></tr>`; }).join("");
+    const total = refineUnit(id, "buy"), gross = total / (1 - S.rtax / 100);
+    refine = `<div class="grid" style="display:grid;gap:6px"><span class="lbl">Reprocessing at ${S.yield}%, per unit, outputs at Jita buy</span>
+      <div class="scroll"><table class="reftab"><thead><tr><th>Output</th><th>Qty</th><th>Jita buy</th><th>ISK</th></tr></thead><tbody>${rows}
+      ${S.rtax ? `<tr><td>Reprocessing tax ${S.rtax}%</td><td></td><td></td><td>${isk(total - gross)}</td></tr>` : ""}
+      <tr><td><b>Total per unit</b></td><td></td><td></td><td><b>${isk(total)}</b></td></tr></tbody></table></div></div>`;
+  }
+  const comp = v && v.comp && v.raw === id ? `Compresses 1:${ratio(v.raw, v.comp).toFixed(0)} into ${item(v.comp).v} m³ (${(t.v / item(v.comp).v).toFixed(0)}× smaller)` : "";
+  const actionTxt = { list: "List a sell order", instant: "Sell to buy orders now", thin: "Judgement call", none: "No market / illiquid" }[r.action];
+  const basisName = { buy: "Jita buy", sell: "Jita sell", avg: "Sell avg" }[S.basis];
+  const perM3 = px(id) / t.v;
+  const noOrders = (AGG[id] || b) && isNaN(bid) && isNaN(ask);
+  el.innerHTML = `<div class="dhead"><h3 id="dTitle">${esc(t.n)}</h3><button class="btn" type="button" id="dClose">Close</button></div>
+  <div class="facts"><span>Type ID <span class="num">${id}</span></span><span>${t.v} m³ per unit</span>${t.p > 1 ? `<span>Reprocess batch ${t.p}</span>` : ""}${comp ? `<span>${comp}</span>` : ""}${noOrders ? `<span class="up" style="color:var(--warn)">Not traded in Jita 4-4</span>` : ""}</div>
+  <div class="rec"><span class="lbl">Recommendation · confidence ${r.conf}</span>
+    <div style="display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline"><span class="big">${r.price ? isk(r.price) : "—"}</span><span>${actionTxt}</span>${r.price ? `<button class="btn" type="button" data-copy="${r.price.toFixed(2)}">Copy price</button>` : ""}</div>
+    <div class="grid4">${kv("Net if listed", isk(r.listNet), "per unit after fees")}${kv("Net if sold now", isk(r.instantNet), isNaN(r.instantNet) ? "no usable buy order" : `at best buy, ${pctp(tax)} tax`)}${kv("Listing edge", pctf(r.edge), isNaN(r.edge) ? "no usable buy order to compare" : "listed vs instant")}</div>
+    <ul>${r.why.map(w => `<li>${esc(w)}</li>`).join("")}</ul></div>
+  ${v && v.raw === id ? routesBlock(v, tax) : ""}
+  <div class="grid4">
+    ${kv("Jita buy", isk(bid), b ? `${b.buyN} orders · ${fmt(b.buyUnits)} units within 10%` : "snapshot")}
+    ${kv("Jita sell", isk(ask), b ? `${b.sellN} orders` : "snapshot")}
+    ${kv("Sell avg", isk(avgOf(id)), b ? `${b.sellUnits ? fmt(b.sellUnits) : 0} units listed under 2× ask` : "Fuzzwork 5% percentile")}
+    ${kv("Spread", isNaN(ask - bid) ? "—" : pctp((ask - bid) / ask, 1), isNaN(ask - bid) ? "" : isk(ask - bid) + " ISK")}
+    ${kv("Vol / day (Forge)", st ? fmt(st.vol7) : "…", st ? `7 calendar days · 30d ${fmt(st.vol30)}` : "")}
+    ${kv("7d avg price", st ? isk(st.p7) : "…", st ? `30d ${isk(st.p30)} · ${pctf(st.trend)}` : "")}
+    ${kv("Last day on record", st && st.y ? `${fmt(st.y.lowest)}–${fmt(st.y.highest)}` : "…", st && st.y ? `${st.y.date.slice(5)} · ${num(st.y.volume)} units · ${st.y.order_count} trade${st.y.order_count === 1 ? "" : "s"}` : "")}
+    ${kv(isComp ? "ISK per m³ (as compressed)" : "ISK per m³", isk(perM3), basisName)}
+    ${isComp ? kv("ISK per raw m³", isk(px(id) / ratio(v.raw, v.comp) / item(v.raw).v), "same ore, per m³ of raw ore") : ""}
+  </div>
+  ${chart(id)}
+  ${refine}
+  <div class="note">Fees used: ${pctp(broker)} broker, ${pctp(tax)} sales tax. Prices are Jita 4-4; volume and history cover all of The Forge. ${st ? `${st.days} day${st.days === 1 ? "" : "s"} of history loaded.` : ""}</div>`;
+  restoreFocus(el, focus);
+}
+function openDossier(id) {
+  const trigger = document.activeElement;
+  openerIdx = captureFocus($("main")) >= 0 ? captureFocus($("main")) : -1;
+  openId = +id;
+  const t = item(openId); want([openId]); if (t.m.length) want(t.m.map(([m]) => m).filter(m => I[m]));
+  const d = $("dossier"); d.hidden = false; $("scrim").hidden = false;
+  d.classList.remove("enter"); void d.offsetWidth; d.classList.add("enter");
+  setInert(true); document.body.classList.add("lock");
+  renderDossier(openId); d.scrollTop = 0; $("dClose").focus();
+  openerEl = trigger;
+}
+let openerEl = null;
+function closeDossier() {
+  openId = null; $("dossier").hidden = true; $("scrim").hidden = true;
+  setInert(false); document.body.classList.remove("lock");
+  // The opener may have been redrawn while the dossier was open: refocus the same slot if the old node is gone.
+  const main = $("main");
+  if (openerEl && openerEl.isConnected) openerEl.focus(); else if (openerIdx >= 0) restoreFocus(main, openerIdx);
+  openerEl = null;
+}
+// Everything behind the dossier is inert: no focus, no clicks, hidden from screen readers.
+function setInert(on) { for (const id of ["controls", "main"]) $(id).inert = on; document.querySelector("header.deck").inert = on; document.querySelector("footer").inert = on; }
+
+// ---------- status & controls ----------
+let aggTime = null, aggErr = null, refreshing = false, tick = null, lastLive = "";
+// "Busy" = actually loading. A queue that is only waiting out a pause doesn't count, so the user can still press Refresh then.
+const busy = () => refreshing || active > 0 || (queue.length > 0 && heldUntil() <= Date.now());
+function status() {
+  const dot = $("dot"), txt = $("statusText"), now = Date.now();
+  const paused = heldUntil() > now, failed = FAIL.size, gaveUp = [...FAIL.values()].filter(f => f.gaveUp).length;
+  const due = [...FAIL.values()].filter(f => !f.gaveUp).map(f => f.next);
+  const secs = Math.max(1, Math.ceil((Math.max(heldUntil(), due.length ? Math.min(...due) : 0) - now) / 1000));
+  let cls, text, key;
+  if (aggErr) { cls = "err"; key = "agg-error"; text = "Price snapshot failed: " + aggErr + ". Check your connection and press Refresh."; }
+  else if (!aggTime) { cls = "busy"; key = "snapshot"; text = "Loading Jita snapshot…"; }
+  else if (rateHold > now) { cls = "busy"; key = "slow"; text = `ESI asked us to slow down, resuming in ${Math.ceil((rateHold - now) / 1000)} s`; }
+  else if (consec >= 10 || (consec >= 5 && paused)) {
+    if (gaveUp && !due.length && !paused) { cls = "err"; key = "esi-down"; text = "ESI unavailable. Press Refresh to try again."; }
+    else { cls = "err"; key = "esi-down"; text = `ESI unavailable, retrying in ${secs} s`; }
+  }
+  else if (busy()) { cls = "busy"; key = "loading"; text = `Snapshot ${aggTime.toLocaleTimeString()} · order books & history ${done}/${total}`; }
+  else if (failed) {
+    cls = "err"; key = "failed";
+    text = `Snapshot ${aggTime.toLocaleTimeString()} · ${failed} lookup${failed > 1 ? "s" : ""} failed` + (gaveUp ? ` (${gaveUp} gave up: press Refresh)` : `, retrying in ${secs} s`);
+  } else { cls = "ok"; key = "ok"; text = `Snapshot ${aggTime.toLocaleTimeString()} · ${total} market lookups done`; }
+  dot.className = "dot " + cls; txt.textContent = text;
+  // Screen readers hear only changes of state, not every progress tick.
+  if (key !== lastLive) { lastLive = key; $("statusLive").textContent = { "agg-error": "Price snapshot failed", snapshot: "Loading prices", "esi-down": "Market service unavailable", slow: "Slowed down by the market service", loading: "Loading market data", failed: "Some lookups failed", ok: "Prices up to date" }[key]; }
+  $("prog").style.width = busy() && total ? Math.min(100, 100 * done / total) + "%" : "0";
+  $("refresh").disabled = busy();
+  // Tick once a second only while a countdown is on screen.
+  const counting = key === "esi-down" || key === "slow" || (key === "failed" && !gaveUp);
+  if (counting && !tick) tick = setInterval(status, 1000); else if (!counting && tick) { clearInterval(tick); tick = null; }
+}
+function wireSeg(id, key) {
+  const el = $(id);
+  const sync = () => el.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === S[key]));
+  el.addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; S[key] = b.dataset.v; save(); sync(); render(); });
+  sync();
+}
+// A typed number: valid values are applied at once; invalid ones get a red outline and are ignored, and the box snaps back to the value in use.
+function wireNum(key, key2, after) {
+  const el = $(key), hint = $(key + "Hint"), blank = key2 === "bover", base = hint.textContent;
+  el.value = S[key2]; el.classList.remove("bad");
+  el.addEventListener("input", () => {
+    const raw = el.value.trim(), v = Number(raw);
+    const good = (blank && raw === "" && !el.validity.badInput) || (raw !== "" && !el.validity.badInput && inRange(key2, v));
+    el.classList.toggle("bad", !good); el.setAttribute("aria-invalid", String(!good));
+    if (good) { S[key2] = blank && raw === "" ? "" : v; save(); syncFees(); hint.textContent = base; hint.classList.remove("warn"); (after || soon)(); }
+    else { hint.textContent = `Needs ${LIM[key2][0]} to ${LIM[key2][1]}. Using ${S[key2] === "" ? "auto" : S[key2]}.`; hint.classList.add("warn"); }
+  });
+  el.addEventListener("change", () => { if (el.classList.contains("bad")) { el.value = S[key2]; el.classList.remove("bad"); el.removeAttribute("aria-invalid"); } });
+}
+// Dropdowns -> calcYield -> S.yield. "I'll type my own %" unlocks the yield box instead.
+function wireYieldCalc() {
+  const F = { where: "ycWhere", sec: "ycSec", rig: "ycRig", r: "ycR", re: "ycRe", op: "ycOp", imp: "ycImp" };
+  for (const id of ["ycR", "ycRe", "ycOp"]) $(id).innerHTML = [0, 1, 2, 3, 4, 5].map(n => `<option value="${n}">Level ${n}</option>`).join("");
+  for (const [k, id] of Object.entries(F)) $(id).value = String(S.yc[k]);
+  const apply = () => {
+    for (const [k, id] of Object.entries(F)) S.yc[k] = ["where", "sec"].includes(k) ? $(id).value : +$(id).value;
+    const manual = S.yc.where === "manual", npc = S.yc.where === "npc";
+    $("ycSec").disabled = manual || npc; $("ycRig").disabled = manual || npc;
+    for (const id of ["ycR", "ycRe", "ycOp", "ycImp"]) $(id).disabled = manual;
+    $("yield").readOnly = !manual;
+    if (manual) { $("ycWhy").textContent = "Typing your own yield. Pick a refinery above to calculate it instead."; }
+    else {
+      const y = calcYield(S.yc), noSec = !npc && S.yc.rig > 0 ? "" : npc ? " (NPC: rigs and security don't apply)" : " (security bonus needs a rig)";
+      S.yield = Math.round(y.total * 10) / 10; $("yield").value = S.yield; $("yield").classList.remove("bad");
+      $("ycWhy").textContent = `${y.base.toFixed(2)}% base${noSec} x ${y.skills.toFixed(4)} skills x ${(1 + y.imp).toFixed(2)} implant = ${y.total.toFixed(2)}%`;
+    }
+    save(); syncFees(); soon();
+  };
+  for (const id of Object.values(F)) $(id).addEventListener("change", apply);
+  apply();
+}
+function syncFees() {
+  const { tax, broker } = fees();
+  $("fees").innerHTML = `Sales tax <b>${(tax * 100).toFixed(2)}%</b> · Broker <b>${(broker * 100).toFixed(2)}%</b>`;
+  $("setSummary").innerHTML = `yield <b>${S.yield}%</b> · reprocess tax <b>${S.rtax}%</b> · sales tax <b>${(tax * 100).toFixed(2)}%</b> · broker <b>${(broker * 100).toFixed(2)}%</b>`;
+}
+function initControls() {
+  wireSeg("basis", "basis"); wireSeg("metric", "metric"); wireSeg("layout", "layout");
+  for (const sel of ["acct", "brel"]) {
+    const el = $(sel);
+    el.innerHTML = [0, 1, 2, 3, 4, 5].map(n => `<option value="${n}">Level ${n}</option>`).join(""); el.value = S[sel];
+    el.onchange = () => { S[sel] = +el.value; save(); syncFees(); render(); };
+  }
+  wireNum("yield", "yield"); wireNum("rtax", "rtax"); wireNum("bover", "bover");
+  wireYieldCalc();
+  syncFees();
+  const tabs = $("tabs");
+  tabs.innerHTML = TABS.map(t => `<button type="button" role="tab" data-t="${t.id}">${t.name}</button>`).join("");
+  const syncTabs = () => tabs.querySelectorAll("button").forEach(b => b.setAttribute("aria-selected", b.dataset.t === S.tab));
+  tabs.onclick = e => { const b = e.target.closest("button"); if (!b) return; S.tab = b.dataset.t; save(); syncTabs(); render(); };
+  syncTabs();
+  const main = $("main");
+  main.addEventListener("click", e => {
+    const c = e.target.closest("[data-id]"); if (c && !c.classList.contains("na")) openDossier(c.dataset.id);
+  });
+  main.addEventListener("change", e => { if (e.target.id === "bfilter") { S.bfilter = e.target.value; save(); render(); } });
+  main.addEventListener("keydown", e => {
+    if ((e.key === "Enter" || e.key === " ") && e.target.matches("tr[data-id]")) { e.preventDefault(); openDossier(e.target.dataset.id); }
+  });
+  $("dossier").addEventListener("click", e => {
+    const r = e.target.closest("[data-retry]"), c = e.target.closest("[data-copy]");
+    if (r) retryKey(r.dataset.retry[0], r.dataset.retry.slice(1));
+    if (c) copyText(c.dataset.copy, c);
+    if (e.target.id === "dClose") closeDossier();
+  });
+  $("scrim").onclick = closeDossier;
+  document.addEventListener("keydown", e => {
+    if (!openId) return;
+    if (e.key === "Escape") { closeDossier(); return; }
+    if (e.key === "Tab") {                       // keep Tab inside the dialog
+      const f = [...$("dossier").querySelectorAll(FOCUSABLE)].filter(x => !x.disabled);
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  });
+  $("refresh").onclick = () => refresh(true);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && Date.now() - (aggTime?.getTime() || 0) > 10 * 60e3 && !busy()) refresh(false); });
+}
+// Clipboard needs a secure context; file:// may not count, so fall back to a hidden textarea.
+function copyText(s, btn) {
+  const ok = () => { btn.textContent = "Copied"; setTimeout(() => { if (btn.isConnected) btn.textContent = "Copy price"; }, 1200); };
+  const old = () => { const ta = document.createElement("textarea"); ta.value = s; ta.style.position = "fixed"; ta.style.opacity = "0"; document.body.append(ta); ta.select(); try { document.execCommand("copy"); ok(); } catch {} ta.remove(); };
+  if (navigator.clipboard) navigator.clipboard.writeText(s).then(ok, old); else old();
+}
+async function refresh(manual) {
+  if (refreshing) return;                    // one refresh at a time; the button is disabled while anything is loading
+  refreshing = true;
+  if (manual) { FAIL.clear(); consec = 0; penalty = 0; breakerHold = 0; }  // the user asked: failed lookups get a fresh start. A pause ESI asked for (rateHold) still stands.
+  done = 0; total = queue.length; gen++;                // counters describe this refresh only; books from the last one are now stale but stay on screen until replaced
+  aggErr = null; aggTime = null; status();
+  try { await loadAgg(); aggTime = new Date(); } catch (e) { aggErr = e.message; console.error("[ledger]", e); }
+  refreshing = false;
+  status(); render();
+}
+initControls(); refresh(false); render();   // refresh first: it zeroes the counters before render() queues any lookups
+setInterval(() => { if (!document.hidden && !busy()) refresh(false); }, 10 * 60e3);   // ESI market data refreshes every 5 minutes; 10 is plenty, and a hidden tab doesn't need it
+</script>
+</body>
+</html>
