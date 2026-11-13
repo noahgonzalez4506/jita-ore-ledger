@@ -100,6 +100,17 @@ h2 { font: 600 17px var(--f-display); letter-spacing: .03em; margin: 0; }
 .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
 
+/* filter bar + sortable headers */
+.fbar { padding-block: 12px 0; }
+.fbar input[type=search] { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; width: 220px; max-width: 100%; }
+.fbar .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding-block: 5px; cursor: pointer; }
+.fbar .fcount { font-size: 12.5px; color: var(--muted); padding-block: 6px; margin-left: auto; }
+.empty { border: 1px dashed var(--line); border-radius: 6px; padding: 18px 14px; display: grid; gap: 8px; justify-items: start; color: var(--muted); }
+.sortb { background: none; border: 0; padding: 0; font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.sortb:hover { color: var(--accent); }
+.sortb .arr { display: inline-block; min-width: 1em; font-size: 10px; color: var(--accent); }
+th[aria-sort="ascending"] .sortb, th[aria-sort="descending"] .sortb { color: var(--accent); }
+
 /* first-glance verdict */
 .verdict { border: 1px solid var(--accent); border-radius: 6px; background: var(--panel); padding: 10px 14px; display: grid; gap: 6px; }
 .verdict .line { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; }
@@ -244,6 +255,8 @@ footer a, .note a { color: var(--accent); }
   </details>
 </div>
 
+<div class="wrap controls fbar" id="fbar" hidden></div>
+
 <main class="wrap" id="main"></main>
 
 <footer class="wrap">
@@ -266,7 +279,8 @@ const item = id => I[id];
 const $ = id => document.getElementById(id);
 
 // ---------- settings (per-viewer, remembered in localStorage) ----------
-const DEF = { basis: "buy", metric: "m3", layout: "rows", yield: 90.6, rtax: 0, acct: 5, brel: 5, bover: "", buyback: 90, bfilter: "", tab: "ores" };
+const DEF = { basis: "buy", metric: "m3", layout: "rows", yield: 72.4, rtax: 0, acct: 5, brel: 5, bover: "", buyback: 90, bfilter: "", tab: "ores",
+  q: "", froute: "all", fgrade: "all", fthin: false, sort: {} };   // filter bar + per-tab sort: [column, "asc"|"desc"]
 // Valid ranges for the typed numbers. Anything outside is rejected and the last good value stays in force.
 const LIM = { yield: [1, 100], rtax: [0, 100], bover: [0, 10], buyback: [1, 100] };
 const inRange = (k, v) => typeof v === "number" && isFinite(v) && v >= LIM[k][0] && v <= LIM[k][1];
@@ -277,9 +291,22 @@ const S = Object.assign({}, DEF, store.get("ledger.settings") || {});
 for (const k of ["yield", "rtax", "buyback"]) if (!inRange(k, S[k])) S[k] = DEF[k];
 if (S.bover !== "" && !inRange("bover", S.bover)) S.bover = "";
 for (const k of ["acct", "brel"]) if (![0, 1, 2, 3, 4, 5].includes(S[k])) S[k] = DEF[k];
-// Yield calculator inputs. Default = the best possible setup (Tatara, nullsec, T2 rig, all V, RX-804) = 90.6%.
-const YC_DEF = { where: "tatara", sec: "null", rig: 3, r: 5, re: 5, op: 5, imp: 0.04 };
+// Yield calculator inputs. Default (owner pick) = Jita NPC station, all skills V, RX-804 = 72.4%. Null Tatara max is 90.6%.
+const YC_DEF = { where: "npc", sec: "high", rig: 0, r: 5, re: 5, op: 5, imp: 0.04 };
 S.yc = Object.assign({}, YC_DEF, S.yc || {});
+// Filter bar + sort: sanitise the same way (a hand-edited value must never break the page).
+S.q = typeof S.q === "string" ? S.q.slice(0, 60) : "";
+if (!["all", "raw", "comp", "ref"].includes(S.froute)) S.froute = "all";
+if (!["all", "0", "1", "2", "3"].includes(S.fgrade)) S.fgrade = "all";
+S.fthin = S.fthin === true;
+S.sort = (() => {
+  const out = {}, src = S.sort && typeof S.sort === "object" ? S.sort : {};
+  for (const t of ["ores", "moon", "other", "ice", "best", "minerals", "haul"]) {
+    const v = src[t];
+    if (Array.isArray(v) && typeof v[0] === "string" && /^[a-z0-9]{1,12}$/i.test(v[0]) && (v[1] === "asc" || v[1] === "desc")) out[t] = [v[0], v[1]];
+  }
+  return out;
+})();
 
 // EVE University's reprocessing formula (Upwell):
 //   yield = (50 + rig) x (1 + security bonus, only with a rig) x (1 + structure bonus)
@@ -292,7 +319,7 @@ function calcYield(c) {
   const skills = (1 + 0.03 * c.r) * (1 + 0.02 * c.re) * (1 + 0.02 * c.op);
   return { base, skills, imp: +c.imp, total: base * skills * (1 + +c.imp) };
 }
-const save = () => store.set("ledger.settings", { yc: S.yc, basis: S.basis, metric: S.metric, layout: S.layout, yield: S.yield, rtax: S.rtax, acct: S.acct, brel: S.brel, bover: S.bover, buyback: S.buyback, bfilter: S.bfilter, tab: S.tab });
+const save = () => store.set("ledger.settings", { yc: S.yc, basis: S.basis, metric: S.metric, layout: S.layout, yield: S.yield, rtax: S.rtax, acct: S.acct, brel: S.brel, bover: S.bover, buyback: S.buyback, bfilter: S.bfilter, tab: S.tab, q: S.q, froute: S.froute, fgrade: S.fgrade, fthin: S.fthin, sort: S.sort });
 
 function fees() {
   const tax = 7.5 * (1 - 0.11 * S.acct) / 100;
@@ -646,26 +673,133 @@ const KINDS = [["raw", "Raw"], ["comp", "Comp"], ["ref", "Refined"]];
 const section = name => DATA.sections.find(s => s.name === name);
 const notTraded = id => AGG[id] && isNaN(AGG[id].bid) && isNaN(AGG[id].ask) && !(BOOK[id] && (isFinite(BOOK[id].bid) || isFinite(BOOK[id].ask)));
 
+// ---------- filter bar & sorting ----------
+// Which controls each tab gets. grades = labels for tier index 0..3 (moon Base/+15%/+100% and deep-space Flawed/X/Z are tiers 0/1/2).
+// My haul has no entry: only sorting applies there.
+const GRADES = {
+  ores: ["Grade I", "Grade II", "Grade III", "Grade IV"],
+  moon: ["Base", "+15%", "+100%"],
+  other: ["Grade I / Flawed", "Grade II / X-Grade", "Grade III / Z-Grade", "Grade IV"],
+  ice: ["Base", "IV-Grade"],
+  best: ["Grade I / Base / Flawed", "Grade II / +15% / X-Grade", "Grade III / +100% / Z-Grade", "Grade IV"],
+};
+const FB = { ores: { route: 1, grades: GRADES.ores }, moon: { route: 1, grades: GRADES.moon }, other: { route: 1, grades: GRADES.other },
+             ice: { route: 1, grades: GRADES.ice }, best: { route: 1, grades: GRADES.best }, minerals: {} };
+const ROUTE_OPTS = [["all", "All"], ["raw", "Raw"], ["comp", "Compress"], ["ref", "Reprocess"]];
+let FIL = { q: "", route: "all", grade: -1, thin: false };   // the filters in force for the render in progress
+let CNT = { shown: 0, total: 0 };                           // rows kept / rows that exist, summed over every table drawn this render
+
+// Turn the saved settings into what this tab can actually use (a grade saved on Ice that Moon doesn't have is ignored there).
+function filters() {
+  const cfg = FB[S.tab] || {}, nG = cfg.grades ? cfg.grades.length : 0;
+  return { q: S.q.trim().toLowerCase(), route: cfg.route ? S.froute : "all", grade: nG && S.fgrade !== "all" && +S.fgrade < nG ? +S.fgrade : -1, thin: !!FB[S.tab] && S.fthin };
+}
+// Does one row (name, tier index, its best-route pick) pass the filters? pick is {k, state} or null when unpriced.
+const keep = (name, ti, pick) =>
+  (!FIL.q || name.toLowerCase().includes(FIL.q)) &&
+  (FIL.grade < 0 || ti === FIL.grade) &&
+  (FIL.route === "all" || (!!pick && pick.k === FIL.route)) &&
+  !(FIL.thin && pick && pick.state === "thin");
+const anyFilter = () => !!(FIL.q || FIL.route !== "all" || FIL.grade >= 0 || FIL.thin || (S.tab === "best" && S.bfilter));
+
+// Sorting. S.sort[tab] = [column, "asc"|"desc"]. Click cycle: first direction, the opposite, then back to the normal order.
+// Text columns start A to Z, numbers start high to low.
+const curSort = () => { const v = S.sort[S.tab]; return v ? { col: v[0], d: v[1] === "asc" ? 1 : -1 } : null; };
+// getters: column -> fn(row) giving a number, a string, or null/NaN for "no value". Missing values always sort last.
+function applySort(list, getters) {
+  const s = curSort(), get = s && getters[s.col];
+  if (!get) return { list, on: false };
+  const miss = v => v == null || (typeof v === "number" && isNaN(v));
+  const out = list.slice().sort((a, b) => {
+    const x = get(a), y = get(b), mx = miss(x), my = miss(y);
+    if (mx || my) return mx - my;                                   // a missing value loses whichever way we sort
+    return s.d * (typeof x === "string" ? x.localeCompare(y) : x - y);
+  });
+  return { list: out, on: true };
+}
+// A header cell whose label is a real button, with aria-sort and an arrow on the active column.
+function sortTh(label, col, text, cls = "") {
+  const s = curSort(), on = !!s && s.col === col;
+  return `<th class="${cls}" aria-sort="${on ? (s.d === 1 ? "ascending" : "descending") : "none"}"><button type="button" class="sortb" data-sort="${col}" data-text="${text ? 1 : 0}">${label}<span class="arr" aria-hidden="true">${on ? (s.d === 1 ? "▲" : "▼") : ""}</span></button></th>`;
+}
+function cycleSort(col, text) {
+  const cur = S.sort[S.tab], first = text ? "asc" : "desc";
+  if (!cur || cur[0] !== col) S.sort[S.tab] = [col, first];
+  else if (cur[1] === first) S.sort[S.tab] = [col, first === "asc" ? "desc" : "asc"];
+  else delete S.sort[S.tab];
+  save();
+  if (S.tab === "haul") renderHaulOut(); else render();
+}
+
+// The filter bar lives outside <main>, so the 400 ms data redraws never replace the search box (it keeps focus and caret).
+// It is only rebuilt when the tab changes, because each tab has different grade labels.
+function buildFbar() {
+  const bar = $("fbar"), cfg = FB[S.tab];
+  bar.dataset.tab = S.tab; bar.hidden = !cfg;
+  if (!cfg) { bar.innerHTML = ""; return; }
+  bar.innerHTML = `<div class="ctl"><label for="fq">Search</label><input type="search" id="fq" placeholder="Name, e.g. spod" autocomplete="off" spellcheck="false" maxlength="60"></div>`
+    + (cfg.route ? `<div class="ctl"><span class="lbl" id="lb-froute">Best route</span><div class="seg" id="froute" role="group" aria-labelledby="lb-froute">${ROUTE_OPTS.map(([v, n]) => `<button type="button" data-v="${v}">${n}</button>`).join("")}</div></div>` : "")
+    + (cfg.grades ? `<div class="ctl"><label for="fgrade">Grade</label><select id="fgrade"><option value="all">All</option>${cfg.grades.map((n, i) => `<option value="${i}">${esc(n)}</option>`).join("")}</select></div>` : "")
+    + `<label class="chk"><input type="checkbox" id="fthin"> Hide thin markets</label>`
+    + `<button class="btn" type="button" id="fclear">Clear filters</button><span class="fcount" id="fcount" role="status" aria-live="polite"></span>`;
+  syncFbar();
+}
+// Push the saved values into the controls (used on build and after Clear; never while typing, so the caret stays put).
+function syncFbar() {
+  if (!FB[S.tab]) return;
+  const f = filters();
+  $("fq").value = S.q;
+  $("froute")?.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === f.route));
+  if ($("fgrade")) $("fgrade").value = f.grade < 0 ? "all" : String(f.grade);
+  $("fthin").checked = S.fthin;
+}
+// After each render: the "Showing X of Y" count, and Clear is only live when something is filtered.
+function updateCount() {
+  if (!FB[S.tab]) return;
+  $("fcount").textContent = CNT.total ? `Showing ${CNT.shown} of ${CNT.total}` : "";
+  $("fclear").disabled = !anyFilter();
+}
+function clearFilters() {
+  S.q = ""; S.froute = "all"; S.fgrade = "all"; S.fthin = false; S.bfilter = "";
+  save(); syncFbar(); render();
+  $("fq")?.focus();
+}
+const emptyState = () => CNT.total && !CNT.shown
+  ? `<div class="empty"><b>Nothing matches these filters.</b><span>Try a shorter search, or switch the route, grade or thin-market filter back to All.</span><button type="button" class="btn" data-clear>Clear filters</button></div>` : "";
+
 function cellHtml(x, id, st, best, suffix, extra = "") {   // id may be null (no compressed form) only when x is NaN
   if (isNaN(x)) return `<span class="cell na">—</span>`;
   const thin = st && st.s === "thin";
   return `<button type="button" class="cell ${best ? "best" : ""} ${thin ? "thin" : ""}" data-id="${id}" ${extra} title="${esc(item(id).n + suffix)}${thin ? " · thin market: " + st.why : ""}">${metricFmt(x)}</button>`;
 }
 
+// Grid layout: one row per ore family. Sorting works on the ore name or on any tier/route column (keys like "1raw" = tier 1, Raw).
+// A tier that fails the filters shows as a dash; the row stays while any of its tiers passes.
 function matrix(title, rows, tierNames, note) {
   const nT = tierNames.length;
-  const rs = rows.map(r => r.tiers.slice(0, nT).map(t => t ? routeSet(t.raw, S.basis) : null));
-  const vals = rs.map((row, ri) => row.map((set, ti) => set ? set.map((r, ki) => metricOf(r.val, rows[ri].tiers[ti].raw, KINDS[ki][0])) : null));
-  const heat = heater(rs.flatMap((row, ri) => row.flatMap((set, ti) => set ? set.map((r, ki) => r.st.s === "thin" ? NaN : vals[ri][ti][ki]) : [])));
+  const all = rows.map(r => {
+    const sets = r.tiers.slice(0, nT).map(t => t ? routeSet(t.raw, S.basis) : null);
+    const picks = sets.map(set => set && pickRoute(set));
+    const vals = sets.map((set, ti) => set ? set.map((x, ki) => metricOf(x.val, r.tiers[ti].raw, KINDS[ki][0])) : null);
+    return { r, sets, picks, vals, show: sets.map((set, ti) => !!set && keep(item(r.tiers[ti].raw).n, ti, picks[ti])) };
+  });
+  // Heat is scaled over every row, so colours don't shift as you filter.
+  const heat = heater(all.flatMap(e => e.sets.flatMap((set, ti) => set ? set.map((x, ki) => x.st.s === "thin" ? NaN : e.vals[ti][ki]) : [])));
+  CNT.total += all.length;
+  const getters = { name: e => e.r.name };
+  for (let ti = 0; ti < nT; ti++) KINDS.forEach(([k], ki) => { getters[ti + k] = e => e.show[ti] ? e.vals[ti][ki] : null; });
+  const shown = applySort(all.filter(e => e.show.some(Boolean)), getters).list;
+  CNT.shown += shown.length;
+  if (!shown.length) return "";
   let h = `<section class="block"><div class="bhead"><h2>${esc(title)}</h2>${note ? `<span class="note">${note}</span>` : ""}</div>
-  <div class="scroll"><table><thead><tr class="tiers"><th class="rowh" rowspan="2">${unitLabel()}</th>${tierNames.map(n => `<th colspan="3">${n}</th>`).join("")}</tr>
-  <tr>${tierNames.map(() => KINDS.map(([k, n]) => `<th class="sub ${k}">${n}</th>`).join("")).join("")}</tr></thead><tbody>`;
-  rows.forEach((r, ri) => {
-    h += `<tr><td class="rowh">${r.group ? `<span class="grp">${r.group}</span>` : ""}${esc(r.name)}</td>`;
+  <div class="scroll"><table><thead><tr class="tiers">${sortTh(unitLabel(), "name", true, "rowh").replace('<th class="rowh"', '<th class="rowh" rowspan="2"')}${tierNames.map(n => `<th colspan="3">${n}</th>`).join("")}</tr>
+  <tr>${tierNames.map((_, ti) => KINDS.map(([k, n]) => sortTh(n, ti + k, false, `sub ${k}`)).join("")).join("")}</tr></thead><tbody>`;
+  for (const e of shown) {
+    h += `<tr><td class="rowh">${e.r.group ? `<span class="grp">${e.r.group}</span>` : ""}${esc(e.r.name)}</td>`;
     for (let ti = 0; ti < nT; ti++) {
-      const t = r.tiers[ti], set = rs[ri][ti], v = vals[ri][ti];
-      if (!t) { h += `<td class="c t0" colspan="3"><span class="cell na">—</span></td>`; continue; }
-      const pick = pickRoute(set), bestK = pick ? KINDS.findIndex(([k]) => k === pick.k) : -1;
+      const t = e.r.tiers[ti], set = e.sets[ti], v = e.vals[ti];
+      if (!t || !e.show[ti]) { h += `<td class="c t0" colspan="3"><span class="cell na">—</span></td>`; continue; }
+      const pick = e.picks[ti], bestK = pick ? KINDS.findIndex(([k]) => k === pick.k) : -1;
       KINDS.forEach(([k], ki) => {
         const x = v[ki], id = k === "comp" ? t.comp : t.raw, thin = set[ki].st.s === "thin";
         h += `<td class="c ${ki === 0 ? "t0" : ""}" style="background:rgba(var(--heat),${(thin ? 0 : heat(x)).toFixed(3)})">` +
@@ -673,7 +807,7 @@ function matrix(title, rows, tierNames, note) {
       });
     }
     h += `</tr>`;
-  });
+  }
   return h + `</tbody></table></div></section>`;
 }
 // One row per grade, with the in-game item name, grouped by ore family.
@@ -683,15 +817,23 @@ function gradeTable(title, rows, tierNames, note) {
     if (!t) return;
     const set = routeSet(t.raw, S.basis), v = set.map((x, ki) => metricOf(x.val, t.raw, KINDS[ki][0]));
     const base = r.tiers.find(Boolean);
-    list.push({ r, t, ti, set, v, first: t === base, bonus: matsPerUnit(t.raw) / matsPerUnit(base.raw) - 1 });
+    list.push({ r, t, ti, set, v, first: t === base, bonus: matsPerUnit(t.raw) / matsPerUnit(base.raw) - 1, pick: pickRoute(set) });
   }));
+  // Heat is scaled over every row, so colours don't shift as you filter.
   const heat = heater(list.flatMap(x => x.v.map((n, ki) => x.set[ki].st.s === "thin" ? NaN : n)));
+  CNT.total += list.length;
+  const getters = { name: x => item(x.t.raw).n, grade: x => x.ti, bonus: x => x.bonus > 0.001 ? x.bonus : null, route: x => x.pick ? ROUTE[x.pick.k] : null };
+  KINDS.forEach(([k], ki) => { getters[k] = x => x.v[ki]; });
+  const sorted = applySort(list.filter(x => keep(item(x.t.raw).n, x.ti, x.pick)), getters);
+  CNT.shown += sorted.list.length;
+  if (!sorted.list.length) return "";
   let h = `<section class="block"><div class="bhead"><h2>${esc(title)}</h2>${note ? `<span class="note">${note}</span>` : ""}</div>
-  <div class="scroll"><table class="gt"><thead><tr><th class="rowh">Ore (in-game name)</th><th class="lft">Grade</th><th class="lft">Yield vs base</th>
-  ${KINDS.map(([k, n]) => `<th class="sub ${k}">${n} · ${unitShort()}</th>`).join("")}<th class="lft">Best route</th></tr></thead><tbody>`;
-  for (const x of list) {
-    const pick = pickRoute(x.set), bestK = pick ? KINDS.findIndex(([k]) => k === pick.k) : -1, thinRow = pick && pick.state === "thin";
-    h += `<tr class="${x.first ? "fam" : ""} ${thinRow ? "thin" : ""}"><td class="rowh">${x.r.group ? `<span class="grp">${x.r.group}</span>` : ""}${esc(item(x.t.raw).n)}</td>
+  <div class="scroll"><table class="gt"><thead><tr>${sortTh("Ore (in-game name)", "name", true, "rowh")}${sortTh("Grade", "grade", true, "lft")}${sortTh("Yield vs base", "bonus", false, "lft")}
+  ${KINDS.map(([k, n]) => sortTh(`${n} · ${unitShort()}`, k, false, `sub ${k}`)).join("")}${sortTh("Best route", "route", true, "lft")}</tr></thead><tbody>`;
+  for (const x of sorted.list) {
+    const pick = x.pick, bestK = pick ? KINDS.findIndex(([k]) => k === pick.k) : -1, thinRow = pick && pick.state === "thin";
+    // The family separator line only makes sense in the normal order; a sorted list mixes families.
+    h += `<tr class="${x.first && !sorted.on ? "fam" : ""} ${thinRow ? "thin" : ""}"><td class="rowh">${x.r.group ? `<span class="grp">${x.r.group}</span>` : ""}${esc(item(x.t.raw).n)}</td>
       <td class="lft">${tierNames[x.ti]}</td><td class="lft num">${x.bonus > 0.001 ? pctf(x.bonus, 0) : "—"}</td>`;
     KINDS.forEach(([k], ki) => {
       const n = x.v[ki], id = k === "comp" ? x.t.comp : x.t.raw, thin = x.set[ki].st.s === "thin";
@@ -710,14 +852,22 @@ function legend() {
 }
 
 function marketTable(title, ids, note) {
-  let h = `<section class="block"><div class="bhead"><h2>${esc(title)}</h2>${note ? `<span class="note">${note}</span>` : ""}</div><div class="scroll"><table class="mt"><thead><tr>
-    <th class="rowh">Item</th><th>Jita buy</th><th>Jita sell</th><th>Sell avg</th><th>Spread</th><th>Vol/day (7d, Forge)</th><th>7d vs 30d</th><th>List at</th><th>Advice</th></tr></thead><tbody>`;
-  for (const id of ids) {
+  const PILL = { list: ["list", "List it"], instant: ["instant", "Sell now"], thin: ["thin", "Judgement call"], none: ["none", "No market"] };
+  const all = ids.map(id => {
     const bid = bidOf(id), ask = askOf(id), st = histStats(id), r = recommend(id), ms = marketState(id, "buy");
-    const spread = bidJunk(id) ? NaN : (ask - bid) / ask;
-    const tr = st ? st.trend : NaN;
-    const pill = { list: ["list", "List it"], instant: ["instant", "Sell now"], thin: ["thin", "Judgement call"], none: ["none", "No market"] }[r.action];
-    h += `<tr data-id="${id}" tabindex="0" class="${ms.s === "thin" ? "thin" : ""}"><td class="rowh">${esc(item(id).n)}</td><td>${isk(bid)}</td><td>${isk(ask)}</td><td>${isk(avgOf(id))}</td>
+    return { id, name: item(id).n, bid, ask, st, r, ms, avg: avgOf(id), spread: bidJunk(id) ? NaN : (ask - bid) / ask, tr: st ? st.trend : NaN, pill: PILL[r.action] };
+  });
+  CNT.total += all.length;
+  const getters = { name: e => e.name, bid: e => e.bid, ask: e => e.ask, avg: e => e.avg, spread: e => e.spread, vol: e => e.st ? e.st.vol7 : NaN,
+                    trend: e => e.tr, list: e => e.r.price || NaN, advice: e => e.pill[1] };
+  const sorted = applySort(all.filter(e => keep(e.name, 0, { state: e.ms.s })), getters).list;
+  CNT.shown += sorted.length;
+  if (!sorted.length) return "";
+  let h = `<section class="block"><div class="bhead"><h2>${esc(title)}</h2>${note ? `<span class="note">${note}</span>` : ""}</div><div class="scroll"><table class="mt"><thead><tr>
+    ${sortTh("Item", "name", true, "rowh")}${sortTh("Jita buy", "bid", false)}${sortTh("Jita sell", "ask", false)}${sortTh("Sell avg", "avg", false)}${sortTh("Spread", "spread", false)}${sortTh("Vol/day (7d, Forge)", "vol", false)}${sortTh("7d vs 30d", "trend", false)}${sortTh("List at", "list", false)}${sortTh("Advice", "advice", true)}</tr></thead><tbody>`;
+  for (const e of sorted) {
+    const { id, bid, ask, st, r, ms, spread, tr, pill } = e;
+    h += `<tr data-id="${id}" tabindex="0" class="${ms.s === "thin" ? "thin" : ""}"><td class="rowh">${esc(e.name)}</td><td>${isk(bid)}</td><td>${isk(ask)}</td><td>${isk(e.avg)}</td>
       <td>${isNaN(spread) ? "—" : (spread * 100).toFixed(1) + "%"}</td><td>${st ? fmt(st.vol7) : FAIL.has("h" + id) ? "n/a" : "…"}</td>
       <td class="${tr > 0.02 ? "up" : tr < -0.02 ? "down" : ""}">${pctf(tr)}</td><td>${r.price ? isk(r.price) : "—"}</td>
       <td><span class="pill ${pill[0]}">${pill[1]}</span></td></tr>`;
@@ -730,11 +880,11 @@ function bestRows(secFilter) {
   const out = [];
   for (const sec of DATA.sections) {
     if (secFilter && sec.name !== secFilter) continue;
-    for (const r of sec.rows) r.tiers.forEach(t => {
+    for (const r of sec.rows) r.tiers.forEach((t, ti) => {
       if (!t) return;
       const pick = pickRoute(routeSet(t.raw, "buy"));
       if (!pick) return;
-      out.push({ name: item(t.raw).n, sec: sec.name, id: t.raw, m3: pick.val / item(t.raw).v, unit: pick.val, route: ROUTE[pick.k], state: pick.state, why: pick.why });
+      out.push({ name: item(t.raw).n, sec: sec.name, ti, k: pick.k, id: t.raw, m3: pick.val / item(t.raw).v, unit: pick.val, route: ROUTE[pick.k], state: pick.state, why: pick.why });
     });
   }
   const order = { ok: 0, wait: 1, thin: 2 };
@@ -742,13 +892,19 @@ function bestRows(secFilter) {
 }
 
 function bestList() {
-  const all = bestRows(S.bfilter), top = all.find(o => o.state === "ok")?.m3 || 1;
+  // The family dropdown (S.bfilter) predates the filter bar; it is applied here alongside the new filters.
+  const every = bestRows(""), top = every.find(o => o.state === "ok")?.m3 || 1;
+  CNT.total += every.length;
+  const getters = { name: o => o.name, sec: o => o.sec, m3: o => o.m3, unit: o => o.unit, route: o => o.route };
+  const sorted = applySort(every.filter(o => (!S.bfilter || o.sec === S.bfilter) && keep(o.name, o.ti, { k: o.k, state: o.state })), getters);
+  CNT.shown += sorted.list.length;
   const opts = ['<option value="">All families</option>'].concat(DATA.sections.map(s => `<option value="${esc(s.name)}"${S.bfilter === s.name ? " selected" : ""}>${esc(s.name)}</option>`)).join("");
   let h = `<section class="block"><div class="bhead"><h2>Every ore, ranked by ISK per m³ mined</h2><span class="pill none">Uses Jita buy</span>
-    <span class="note">Instant-sale value of a full ore hold today. Route is the best of selling raw, compressing, or reprocessing at ${S.yield}%${S.rtax ? ` and ${S.rtax}% tax` : ""}. Thin markets (flagged) sort below every real market.</span></div>
-  <div class="ctl" style="max-width:260px"><label for="bfilter">Family</label><select id="bfilter">${opts}</select></div>
-  <div class="scroll"><table class="mt"><thead><tr><th class="rowh">#&nbsp;&nbsp;Ore</th><th>Family</th><th>ISK / m³</th><th>ISK / unit</th><th>Best route</th><th style="width:30%">vs top</th></tr></thead><tbody>`;
-  all.forEach((o, i) => {
+    <span class="note">Instant-sale value of a full ore hold today. Route is the best of selling raw, compressing, or reprocessing at ${S.yield}%${S.rtax ? ` and ${S.rtax}% tax` : ""}. Thin markets (flagged) sort below every real market until you sort a column yourself.</span></div>
+  <div class="ctl" style="max-width:260px"><label for="bfilter">Family</label><select id="bfilter">${opts}</select></div>`;
+  if (!sorted.list.length) return h + `</section>`;
+  h += `<div class="scroll"><table class="mt"><thead><tr>${sortTh("#&nbsp;&nbsp;Ore", "name", true, "rowh")}${sortTh("Family", "sec", true)}${sortTh("ISK / m³", "m3", false)}${sortTh("ISK / unit", "unit", false)}${sortTh("Best route", "route", true)}<th style="width:30%">vs top</th></tr></thead><tbody>`;
+  sorted.list.forEach((o, i) => {
     const thin = o.state !== "ok", flag = o.state === "thin" ? ` <span class="pill thin" title="${esc(o.why)}">thin market</span>` : o.state === "wait" ? ` <span class="pill none">checking…</span>` : "";
     h += `<tr data-id="${o.id}" tabindex="0" class="${thin ? "thin" : ""}"><td class="rowh"><span class="muted num">${String(i + 1).padStart(3, " ")}</span>&nbsp;&nbsp;${esc(o.name)}${flag}</td><td class="txt">${esc(o.sec)}</td><td>${num(o.m3, 1)}</td><td>${isk(o.unit)}</td><td class="txt">${o.route}</td>
       <td>${thin ? "" : `<div style="height:8px;border-radius:2px;background:rgba(var(--heat),.75);width:${Math.max(1, 100 * o.m3 / top).toFixed(1)}%"></div>`}</td></tr>`;
@@ -873,10 +1029,14 @@ function renderHaulOut() {
     const bi = tot.indexOf(Math.max(...tot)), best = tot[bi];
     const m3 = rows.reduce((s, r) => s + r.m3, 0), cm3 = rows.reduce((s, r) => s + r.compM3, 0);
     const bb = tot[0] * S.buyback / 100, thinN = rows.filter(r => r.pick && r.pick.state === "thin").length, unpriced = rows.filter(r => !r.pick).length;
-    h += `<div class="scroll"><table class="mt"><thead><tr><th class="rowh">Item</th><th>Qty</th><th>m³</th><th>Sell as-is (Jita buy)</th><th>Compressed</th><th>Reprocessed</th><th>Best route</th><th>List price / unit</th></tr></thead><tbody>`;
-    for (const r of rows) {
+    const bestNameOf = r => !r.pick ? "No market" : (r.pick.k === "raw" ? (r.routes[1].val >= 0 || r.routes[2].val >= 0 ? "Sell as-is" : "Sell") : ROUTE[r.pick.k]);
+    // Sorting only reorders the lines; the totals below always cover the whole haul.
+    const shownRows = applySort(rows, { name: r => r.t.n, qty: r => r.qty, m3: r => r.m3, raw: r => r.routes[0].val, comp: r => r.routes[1].val, ref: r => r.routes[2].val,
+                                        route: bestNameOf, list: r => r.rec.price || NaN }).list;
+    h += `<div class="scroll"><table class="mt"><thead><tr>${sortTh("Item", "name", true, "rowh")}${sortTh("Qty", "qty", false)}${sortTh("m³", "m3", false)}${sortTh("Sell as-is (Jita buy)", "raw", false)}${sortTh("Compressed", "comp", false)}${sortTh("Reprocessed", "ref", false)}${sortTh("Best route", "route", true)}${sortTh("List price / unit", "list", false)}</tr></thead><tbody>`;
+    for (const r of shownRows) {
       const thin = r.pick && r.pick.state === "thin", cellV = (i) => isNaN(r.routes[i].val) ? "—" : `<span class="${r.routes[i].st.s === "thin" ? "muted" : ""}">${isk(r.routes[i].val)}</span>`;
-      const bestName = !r.pick ? "No market" : (r.pick.k === "raw" ? (r.routes[1].val >= 0 || r.routes[2].val >= 0 ? "Sell as-is" : "Sell") : ROUTE[r.pick.k]);
+      const bestName = bestNameOf(r);
       h += `<tr data-id="${r.id}" tabindex="0" class="${thin ? "thin" : ""}"><td class="rowh">${esc(r.t.n)}${thin ? ` <span class="pill thin" title="${esc(r.pick.why)}">thin market</span>` : ""}</td>
         <td>${num(r.qty)}</td><td>${num(r.m3, 1)}</td><td>${cellV(0)}</td><td>${cellV(1)}</td><td>${cellV(2)}${r.leftover ? ` <span class="muted" title="Reprocessing works in batches of ${r.t.p}; ${r.leftover} left over are not counted">*</span>` : ""}</td>
         <td class="txt">${bestName}</td><td>${r.rec.price ? `${isk(r.rec.price)} <span class="muted">${r.rec.conf}</span>` : `<span class="muted">${r.rec.action === "none" ? "no market" : "—"}</span>`}</td></tr>`;
@@ -918,6 +1078,8 @@ function restoreFocus(root, idx) { if (idx >= 0) root.querySelectorAll(FOCUSABLE
 function render() {
   const tab = currentTab(), main = $("main");
   veldCache = null;
+  FIL = filters(); CNT = { shown: 0, total: 0 };
+  if ($("fbar").dataset.tab !== tab.id) buildFbar();
   if (tab.id === "haul") {
     if (main.dataset.view !== "haul") { buildHaulShell(main); main.dataset.view = "haul"; }
     renderHaulOut();
@@ -936,7 +1098,9 @@ function render() {
         n === "Moon ores" ? "R4 ubiquitous to R64 exceptional. +15% and +100% are the richer variants." :
         n === "Standard ores" ? "Percent mode is relative to base Veldspar for the same route." : "")).join("");
     }
+    h += emptyState();
     main.innerHTML = h; main.dataset.view = tab.id;
+    updateCount();
     restoreFocus(main, focus);
   }
   fetchNeeded();
@@ -1149,9 +1313,24 @@ function initControls() {
   syncTabs();
   const main = $("main");
   main.addEventListener("click", e => {
+    const sb = e.target.closest(".sortb"); if (sb) { cycleSort(sb.dataset.sort, sb.dataset.text === "1"); return; }
+    if (e.target.closest("[data-clear]")) { clearFilters(); return; }
     const c = e.target.closest("[data-id]"); if (c && !c.classList.contains("na")) openDossier(c.dataset.id);
   });
   main.addEventListener("change", e => { if (e.target.id === "bfilter") { S.bfilter = e.target.value; save(); render(); } });
+  const fbar = $("fbar");
+  fbar.addEventListener("input", e => { if (e.target.id === "fq") { S.q = e.target.value; save(); render(); } });
+  fbar.addEventListener("change", e => {
+    if (e.target.id === "fgrade") S.fgrade = e.target.value;
+    else if (e.target.id === "fthin") S.fthin = e.target.checked;
+    else return;
+    save(); render();
+  });
+  fbar.addEventListener("click", e => {
+    const b = e.target.closest("#froute button");
+    if (b) { S.froute = b.dataset.v; save(); syncFbar(); render(); }
+    else if (e.target.id === "fclear") clearFilters();
+  });
   main.addEventListener("keydown", e => {
     if ((e.key === "Enter" || e.key === " ") && e.target.matches("tr[data-id]")) { e.preventDefault(); openDossier(e.target.dataset.id); }
   });
