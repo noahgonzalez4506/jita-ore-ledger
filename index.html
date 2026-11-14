@@ -2308,7 +2308,7 @@ function ratInfoBlock(p) {
 // are only ever sent to login.eveonline.com and esi.evetech.net. Base bounties: tools/build_bounties.py (SDE).
 const SSO_CLIENT_ID = "1f703887a83c43e2921f779f14fbc3a1";   // public app id from developers.eveonline.com (never the secret)
 const SSO = { auth: "https://login.eveonline.com/v2/oauth/authorize", token: "https://login.eveonline.com/v2/oauth/token",
-              revoke: "https://login.eveonline.com/v2/oauth/revoke", scope: "esi-wallet.read_character_wallet.v1" };
+              revoke: "https://login.eveonline.com/v2/oauth/revoke", scope: "esi-wallet.read_character_wallet.v1 esi-skills.read_skills.v1" };
 const BT = new Map(BOUNTY ? BOUNTY.types.map(([id, n, g, v]) => [id, { n, g, v }]) : []);   // type id -> {name, group, base}
 const BG = BOUNTY ? BOUNTY.groups : [];                                                      // [group name, faction, class, where]
 const ratName = id => BT.has(id) ? BT.get(id).n : `NPC type ${id}`;
@@ -2459,6 +2459,171 @@ function modChart(list, W = 520, H = 150) {
     <text x="${L}" y="${H - 6}">${when(t0)}</text><text x="${W - R}" y="${H - 6}" text-anchor="end">${when(t1)}</text></svg></div>`;
 }
 
+// ----- your skills + fit checker -----
+// With the skills scope, the page reads your trained skills (ESI, cached 60 s by CCP) and checks a fit pasted in EVE's
+// export format: can you use every item, and does it fit (CPU, powergrid, calibration, slots) with your skills.
+// Fitting skills counted: CPU Management, Power Grid Management, Weapon Upgrades (-5% weapon CPU per level),
+// Advanced Weapon Upgrades (-2% weapon powergrid), Shield Upgrades (-5% shield extender powergrid), plus fitted
+// Co-Processors / Reactor Control Units. Other fitting skills and hull role bonuses are not counted (the result says so).
+const SK = { CPU: 3426, PG: 3413, WU: 3318, AWU: 11207, SU: 3425 };
+const SKILL_SCOPE = "esi-skills.read_skills.v1";
+const hasSkillScope = s => !!s && (s.scopes || []).includes(SKILL_SCOPE);
+const SKL = { by: null, t: 0, busy: false, err: null, sp: 0 };
+async function loadSkills(force) {
+  const s = loadSso(); if (!s || !hasSkillScope(s) || SKL.busy) return;
+  if (!force && SKL.by && SKL.charId === s.charId && Date.now() - SKL.t < 10 * 60e3) return;
+  SKL.busy = true; SKL.err = null;
+  try {
+    const r = await fetch(`${ESI}/characters/${s.charId}/skills/`, { headers: { Authorization: "Bearer " + await accessToken() } });
+    if (!r.ok) throw new Error("ESI skills replied " + r.status);
+    const j = await r.json();
+    // active level: what you can use right now (an Alpha clone can be capped below what you trained)
+    SKL.by = new Map(j.skills.map(x => [x.skill_id, { active: x.active_skill_level, trained: x.trained_skill_level }]));
+    Object.assign(SKL, { t: Date.now(), sp: j.total_sp, charId: s.charId });
+  } catch (e) { SKL.err = e.message; console.error("[ledger] skills", e); }
+  SKL.busy = false; renderKills();
+}
+const lvl = id => SKL.by && SKL.by.has(id) ? SKL.by.get(id).active : 0;
+
+// Type data from ESI (name -> id, then dogma), kept for the session.
+const TDATA = new Map();
+async function typeIds(names) {
+  const uniq = [...new Set(names)];                         // ESI refuses the whole lookup if a name repeats
+  const r = await fetch(ESI + "/universe/ids/", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(uniq) });
+  if (!r.ok) throw new Error("ESI name lookup replied " + r.status);
+  const j = await r.json();
+  return new Map((j.inventory_types || []).map(x => [x.name.toLowerCase(), x.id]));
+}
+async function typeData(id) {
+  if (TDATA.has(id)) return TDATA.get(id);
+  const t = await (await fetch(`${ESI}/universe/types/${id}/`)).json();
+  const a = Object.fromEntries((t.dogma_attributes || []).map(x => [x.attribute_id, x.value]));
+  const fx = new Set((t.dogma_effects || []).map(x => x.effect_id));
+  // required skills: (skill attr, level attr) pairs 182/277, 183/278, 184/279, 1285/1286, 1289/1287, 1290/1288
+  const req = [[182, 277], [183, 278], [184, 279], [1285, 1286], [1289, 1287], [1290, 1288]].filter(([s, l]) => a[s] && a[l]).map(([s, l]) => [a[s], a[l]]);
+  const d = { id, name: t.name, group: t.group_id, a, req, launcher: fx.has(40), turret: fx.has(42), slot: SLOT_EFFECT[[...fx].find(e => SLOT_EFFECT[e])] || "?" };
+  TDATA.set(id, d); return d;
+}
+// EVE's fit export: "[Drake, name]" then one item per line, "Module, Charge" or "Item xN"; "[Empty ...]" lines skipped.
+function parseFit(text) {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const head = lines[0] && lines[0].match(/^\[([^,\]]+)/);
+  if (!head) return null;
+  const items = [];
+  for (const l of lines.slice(1)) {
+    if (/^\[empty/i.test(l)) continue;
+    const m = l.match(/^(.*?)\s+x(\d+)$/);
+    if (m) { items.push({ name: m[1].trim(), qty: +m[2], fitted: false }); continue; }   // drones, cargo
+    const [mod, charge] = l.split(",").map(x => x.trim());
+    items.push({ name: mod, qty: 1, fitted: true });
+    if (charge) items.push({ name: charge, qty: 0, fitted: false, charge: true });
+  }
+  return { hull: head[1].trim(), items };
+}
+const FIT_DEFAULT = `[Drake, Proteus Killer]
+Damage Control II
+Ballistic Control System II
+Ballistic Control System II
+Co-Processor II
+
+Warp Scrambler II
+Large Shield Extender II
+Large F-S9 Regolith Compact Shield Extender
+Multispectrum Shield Hardener II
+Multispectrum Shield Hardener II
+[Empty Med slot]
+
+Heavy Assault Missile Launcher II, Scourge Heavy Assault Missile
+Heavy Assault Missile Launcher II, Scourge Heavy Assault Missile
+Heavy Assault Missile Launcher II, Scourge Heavy Assault Missile
+Heavy Assault Missile Launcher II, Scourge Heavy Assault Missile
+Heavy Assault Missile Launcher II, Scourge Heavy Assault Missile
+Heavy Assault Missile Launcher II, Scourge Heavy Assault Missile
+[Empty High slot]
+
+Medium Core Defense Field Extender I
+Medium Core Defense Field Extender I
+Medium Core Defense Field Extender I
+
+Hobgoblin II x5`;
+const FIT = { text: store.get("ledger.fit") || FIT_DEFAULT, res: null, busy: false, err: null };
+const SLOT_EFFECT = { 12: "high", 13: "med", 11: "low", 2663: "rig" };   // hiPower, medPower, loPower, rigSlot effect ids
+async function checkFit() {
+  FIT.busy = true; FIT.err = null; renderKills();
+  try {
+    const f = parseFit(FIT.text); if (!f) throw new Error("the first line should look like [Drake, my fit]");
+    const ids = await typeIds([f.hull, ...f.items.map(i => i.name)]);
+    const unknown = [f.hull, ...f.items.map(i => i.name)].filter(n => !ids.has(n.toLowerCase()));
+    if (unknown.length) throw new Error("not found in EVE: " + [...new Set(unknown)].join(", "));
+    const hull = await typeData(ids.get(f.hull.toLowerCase()));
+    const rows = [];
+    for (const it of f.items) {
+      const d = await typeData(ids.get(it.name.toLowerCase()));
+      rows.push(Object.assign({ d, slot: d.slot }, it));     // slot comes from the module's dogma effects
+    }
+    FIT.res = { hull, rows, at: Date.now() };
+  } catch (e) { FIT.err = e.message; FIT.res = null; }
+  FIT.busy = false; renderKills();
+}
+// The maths, from the cached result and your current skills (re-run when skills load).
+function fitMaths() {
+  const R = FIT.res; if (!R) return null;
+  const h = R.hull.a, fitted = R.rows.filter(r => r.fitted);
+  let cpuMul = 1 + 0.05 * lvl(SK.CPU), pgMul = 1 + 0.05 * lvl(SK.PG);
+  for (const r of fitted) { if (r.d.a[202]) cpuMul *= r.d.a[202]; if (r.d.a[145]) pgMul *= r.d.a[145]; }
+  const cpuOut = (h[48] || 0) * cpuMul, pgOut = (h[11] || 0) * pgMul, calOut = h[1132] || 0;
+  let cpu = 0, pg = 0, cal = 0;
+  const lines = fitted.map(r => {
+    const weapon = r.d.launcher || r.d.turret, ext = r.d.group === 38;        // group 38 = Shield Extender
+    const c = (r.d.a[50] || 0) * (weapon ? 1 - 0.05 * lvl(SK.WU) : 1);
+    const p = (r.d.a[30] || 0) * (weapon ? 1 - 0.02 * lvl(SK.AWU) : 1) * (ext ? 1 - 0.05 * lvl(SK.SU) : 1);
+    cpu += c; pg += p; cal += r.d.a[1153] || 0;
+    return { r, c, p };
+  });
+  const slots = { high: h[14] || 0, med: h[13] || 0, low: h[12] || 0, rig: h[1137] || 0 }, used = { high: 0, med: 0, low: 0, rig: 0 };
+  for (const r of fitted) if (used[r.slot] != null) used[r.slot]++;
+  // skill requirements for the hull and every item (charges and drones included)
+  const need = new Map();
+  for (const d of [R.hull, ...R.rows.map(r => r.d)]) for (const [sid, l] of d.req) {
+    const k = sid; if (!need.has(k) || need.get(k).l < l) need.set(k, { l, for: new Set() });
+    need.get(k).for.add(d.name);
+  }
+  return { cpu, pg, cal, cpuOut, pgOut, calOut, lines, slots, used, need };
+}
+function fitBlock() {
+  const s = loadSso(), have = hasSkillScope(s);
+  let h = `<div style="display:grid;gap:8px"><span class="lbl">Fit check · against your skills</span>`;
+  if (!s) h += `<div class="note">Log in to check fits against your own skills. Without a login the check assumes every skill at 0.</div>`;
+  else if (!have) h += `<div class="note" style="color:var(--warn)">Your login doesn't include skills yet. <button class="btn" type="button" data-kt="login">Log in again to allow skills</button></div>`;
+  else if (SKL.err) h += `<div class="note" style="color:var(--bad)">${esc(SKL.err)}</div>`;
+  else if (SKL.by) h += `<div class="note">${num(SKL.sp)} skill points · ${SKL.by.size} skills · read ${when(SKL.t)} EVE. <button class="btn" type="button" data-kt="skills">Refresh skills</button></div>`;
+  else h += `<div class="note">Reading your skills…</div>`;
+  h += `<textarea id="fitIn" spellcheck="false" style="width:100%;min-height:180px;font:12.5px/1.4 var(--f-mono)">${esc(FIT.text)}</textarea>
+    <div><button class="btn primary" type="button" data-kt="fit"${FIT.busy ? " disabled" : ""}>${FIT.busy ? "Checking…" : "Check this fit"}</button> <span class="note">Paste a fit from EVE (Fitting window, Copy to clipboard). The Drake brawler is filled in to start.</span></div>`;
+  if (FIT.err) h += `<div class="note" style="color:var(--bad)">${esc(FIT.err)}</div>`;
+  const m = fitMaths();
+  if (m) {
+    const ok = (a, b) => a <= b + 1e-6, line = (lab, a, b, d = 1) => `<span class="pill ${ok(a, b) ? "instant" : "bad"}">${lab} ${num(a, d)} / ${num(b, d)}</span>`;
+    const missing = [...m.need].filter(([sid, n]) => lvl(sid) < n.l);
+    h += `<div class="facts">${line("CPU", m.cpu, m.cpuOut)} ${line("Powergrid", m.pg, m.pgOut)} ${line("Calibration", m.cal, m.calOut, 0)}
+      ${["high", "med", "low", "rig"].map(k => `<span class="pill ${m.used[k] <= m.slots[k] ? "none" : "bad"}">${k} ${m.used[k]}/${m.slots[k]}</span>`).join(" ")}</div>`;
+    h += missing.length
+      ? `<div class="note" style="color:var(--bad)"><b>Skills you still need:</b> ${missing.map(([sid, n]) => `${esc(skillName(sid))} ${n.l} (you have ${lvl(sid)}) for ${esc([...n.for].join(", "))}`).join("; ")}.</div>`
+      : `<div class="note" style="color:var(--good)">${s && have && SKL.by ? "You can use every item in this fit." : "Log in with skills to check the requirements."}</div>`;
+    h += `<div class="scroll"><table class="reftab"><thead><tr><th>Module</th><th>Slot</th><th>CPU</th><th>Powergrid</th><th>Needs</th></tr></thead><tbody>${m.lines.map(({ r, c, p }) =>
+      `<tr><td>${esc(r.d.name)}</td><td>${r.slot}</td><td>${num(c, 1)}</td><td>${num(p, 1)}</td><td style="font-family:var(--f-body)">${r.d.req.map(([sid, l]) => `<span class="${lvl(sid) >= l ? "up" : "down"}">${esc(skillName(sid))} ${l}</span>`).join(", ")}</td></tr>`).join("")}</tbody></table></div>
+      <div class="note">Fitting skills counted: CPU Management ${lvl(SK.CPU)}, Power Grid Management ${lvl(SK.PG)}, Weapon Upgrades ${lvl(SK.WU)}, Advanced Weapon Upgrades ${lvl(SK.AWU)}, Shield Upgrades ${lvl(SK.SU)}. Not counted: other fitting skills, implants and ship role bonuses, so the in-game fitting window has the final word.</div>`;
+  }
+  return h + `</div>`;
+}
+const SKNAME = new Map();
+function skillName(id) {
+  if (SKNAME.has(id)) return SKNAME.get(id);
+  SKNAME.set(id, `skill ${id}`);
+  fetch(`${ESI}/universe/types/${id}/`).then(r => r.json()).then(t => { SKNAME.set(id, t.name); renderKills(); }).catch(() => {});
+  return SKNAME.get(id);
+}
+
 // ----- the tab -----
 let ktFaction = "Angel Cartel", ktQuery = "";
 function renderKills() {
@@ -2468,7 +2633,7 @@ function renderKills() {
   if (KT.err) h += `<div class="note" style="color:var(--bad)">${esc(KT.err)}</div>`;
   if (KT.note) h += `<div class="note">${esc(KT.note)}</div>`;
   if (!s) {
-    h += `<div class="rec"><span class="lbl">Not logged in</span><div>Read-only access to one thing: your wallet journal (scope <code>esi-wallet.read_character_wallet.v1</code>). The page can't move ISK or change anything in game.</div>
+    h += `<div class="rec"><span class="lbl">Not logged in</span><div>Read-only access to two things: your wallet journal (<code>esi-wallet.read_character_wallet.v1</code>) and your skills (<code>esi-skills.read_skills.v1</code>). The page can't move ISK or change anything in game.</div>
       <div><button class="btn primary" type="button" data-kt="login">Log in with EVE Online</button></div></div>`;
   } else {
     h += `<div class="rec"><div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><img src="https://images.evetech.net/characters/${s.charId}/portrait?size=64" width="48" height="48" alt="" style="border-radius:4px">
@@ -2477,7 +2642,9 @@ function renderKills() {
       <button class="btn" type="button" data-kt="csv">Export CSV</button><button class="btn" type="button" data-kt="logout">Log out</button><button class="btn" type="button" data-kt="wipe">Delete history</button></div></div>`;
   }
   if (s) h += ktViews(s.charId);
+  h += fitBlock();
   h += bountyRef();
+  if (s && hasSkillScope(s) && !SKL.by && !SKL.busy && !SKL.err) loadSkills();
   main.innerHTML = h + `</section>`;
   restoreFocus(main, focus);
 }
@@ -2554,6 +2721,8 @@ function wireKills() {
     else if (act === "sync") syncJournal(true);
     else if (act === "logout") logout();
     else if (act === "csv") exportCsv();
+    else if (act === "fit") { const ta = $("fitIn"); if (ta) { FIT.text = ta.value; store.set("ledger.fit", FIT.text); } checkFit(); }
+    else if (act === "skills") loadSkills(true);
     else if (act === "wipe") {
       const s = loadSso(); if (!s) return;
       if (confirm(`Delete the saved kill history for ${s.name} from this browser? Payouts from the last 30 days can be read again with Sync now; older ones are gone for good.`)) {
@@ -2567,6 +2736,7 @@ function wireKills() {
     if (e.target.id === "ktSys") { KT.sel = +e.target.value; renderKills(); }
     if (e.target.id === "ktFac") { ktFaction = e.target.value; renderKills(); }
   });
+  main.addEventListener("input", e => { if (S.tab === "kills" && e.target.id === "fitIn") { FIT.text = e.target.value; store.set("ledger.fit", FIT.text); return; } });
   main.addEventListener("input", e => { if (S.tab === "kills" && e.target.id === "ktQ") { ktQuery = e.target.value; const pos = e.target.selectionStart; renderKills(); const q = $("ktQ"); if (q) { q.value = ktQuery; q.focus(); q.setSelectionRange(pos, pos); } } });
 }
 
