@@ -2500,7 +2500,7 @@ function modChart(list, W = 520, H = 150) {
 // Fitting skills counted: CPU Management, Power Grid Management, Weapon Upgrades (-5% weapon CPU per level),
 // Advanced Weapon Upgrades (-2% weapon powergrid), Shield Upgrades (-5% shield extender powergrid), plus fitted
 // Co-Processors / Reactor Control Units. Other fitting skills and hull role bonuses are not counted (the result says so).
-const SK = { CPU: 3426, PG: 3413, WU: 3318, AWU: 11207, SU: 3425 };
+const SK = { CPU: 3426, PG: 3413, WU: 3318, AWU: 11207, SU: 3425, MU: 22578 };   // MU = Mining Upgrades
 const SKILL_SCOPE = "esi-skills.read_skills.v1";
 const hasSkillScope = s => !!s && (s.scopes || []).includes(SKILL_SCOPE);
 const SKL = { by: null, t: 0, busy: false, err: null, sp: 0 };
@@ -2605,12 +2605,18 @@ function fitMaths() {
   const R = FIT.res; if (!R) return null;
   const h = R.hull.a, fitted = R.rows.filter(r => r.fitted);
   let cpuMul = 1 + 0.05 * lvl(SK.CPU), pgMul = 1 + 0.05 * lvl(SK.PG);
-  for (const r of fitted) { if (r.d.a[202]) cpuMul *= r.d.a[202]; if (r.d.a[145]) pgMul *= r.d.a[145]; }
+  for (const r of fitted) {
+    if (r.d.a[202]) cpuMul *= r.d.a[202]; if (r.d.a[145]) pgMul *= r.d.a[145];
+    if (r.d.a[424]) cpuMul *= 1 + r.d.a[424] / 100;                          // CPU rigs (Processor Overclocking Unit)
+  }
+  // Mining laser upgrades raise the CPU need of every mining laser (cpuPenaltyPercent, cut 5% per Mining Upgrades level).
+  const minerMul = fitted.reduce((m, r) => r.d.a[1082] ? m * (1 + r.d.a[1082] * (1 - 0.05 * lvl(SK.MU)) / 100) : m, 1);
+  const MINER_GROUPS = new Set([54, 464, 483]);                                // mining laser, strip miner, frequency mining laser
   const cpuOut = (h[48] || 0) * cpuMul, pgOut = (h[11] || 0) * pgMul, calOut = h[1132] || 0;
   let cpu = 0, pg = 0, cal = 0;
   const lines = fitted.map(r => {
     const weapon = r.d.launcher || r.d.turret, ext = r.d.group === 38;        // group 38 = Shield Extender
-    const c = (r.d.a[50] || 0) * (weapon ? 1 - 0.05 * lvl(SK.WU) : 1);
+    const c = (r.d.a[50] || 0) * (weapon ? 1 - 0.05 * lvl(SK.WU) : 1) * (MINER_GROUPS.has(r.d.group) ? minerMul : 1);
     const p = (r.d.a[30] || 0) * (weapon ? 1 - 0.02 * lvl(SK.AWU) : 1) * (ext ? 1 - 0.05 * lvl(SK.SU) : 1);
     cpu += c; pg += p; cal += r.d.a[1153] || 0;
     return { r, c, p };
@@ -2680,7 +2686,7 @@ function fitBlock() {
       : `<div class="note" style="color:var(--good)">${s && have && SKL.by ? "You can use every item in this fit." : "Log in with skills to check the requirements."}</div>`;
     h += `<div class="scroll"><table class="reftab"><thead><tr><th>Module</th><th>Slot</th><th>CPU</th><th>Powergrid</th><th>Needs</th></tr></thead><tbody>${m.lines.map(({ r, c, p }) =>
       `<tr><td>${esc(r.d.name)}</td><td>${r.slot}</td><td>${num(c, 1)}</td><td>${num(p, 1)}</td><td style="font-family:var(--f-body)">${r.d.req.map(([sid, l]) => `<span class="${lvl(sid) >= l ? "up" : "down"}">${esc(skillName(sid))} ${l}</span>`).join(", ")}</td></tr>`).join("")}</tbody></table></div>
-      <div class="note">Fitting skills counted: CPU Management ${lvl(SK.CPU)}, Power Grid Management ${lvl(SK.PG)}, Weapon Upgrades ${lvl(SK.WU)}, Advanced Weapon Upgrades ${lvl(SK.AWU)}, Shield Upgrades ${lvl(SK.SU)}. Not counted: other fitting skills, implants and ship role bonuses, so the in-game fitting window has the final word.</div>`;
+      <div class="note">Fitting skills counted: CPU Management ${lvl(SK.CPU)}, Power Grid Management ${lvl(SK.PG)}, Weapon Upgrades ${lvl(SK.WU)}, Advanced Weapon Upgrades ${lvl(SK.AWU)}, Shield Upgrades ${lvl(SK.SU)}, Mining Upgrades ${lvl(SK.MU)} (mining upgrades add CPU to mining lasers). Not counted: other fitting skills, implants and ship role bonuses, so the in-game fitting window has the final word.</div>`;
     if (!s) h += `<div class="note">Log in to save this fit to your character.</div>`;
     else if (!hasFitScope(s)) h += `<div class="note">Saving fits to your character needs one more permission. <button class="btn" type="button" data-kt="loginFit">Allow fittings (log in again)</button> Your app at developers.eveonline.com must list <code>esi-fittings.read_fittings.v1</code> and <code>esi-fittings.write_fittings.v1</code>.</div>`;
     else h += `<div><button class="btn primary" type="button" data-kt="fitSave"${FIT.saving ? " disabled" : ""}>${FIT.saving ? "Saving…" : "Save to EVE"}</button> <span class="note">Adds this fit to ${esc(s.name)}'s saved fittings (you confirm first; existing fittings are never changed).</span></div>`;
