@@ -2336,6 +2336,9 @@ const SSO = { auth: "https://login.eveonline.com/v2/oauth/authorize", token: "ht
               revoke: "https://login.eveonline.com/v2/oauth/revoke", scope: "esi-wallet.read_character_wallet.v1 esi-skills.read_skills.v1" };
 // Asked for only when you press "Allow contacts" (read: so existing contacts are never touched; write: to add new ones).
 const CONTACT_SCOPES = "esi-characters.read_contacts.v1 esi-characters.write_contacts.v1";
+// Asked for only when you press "Allow fittings" (read: to warn before a duplicate; write: to save a fit to your character).
+const FIT_SCOPES = "esi-fittings.read_fittings.v1 esi-fittings.write_fittings.v1";
+const hasFitScope = s => !!s && FIT_SCOPES.split(" ").every(x => (s.scopes || []).includes(x));
 const BT = new Map(BOUNTY ? BOUNTY.types.map(([id, n, g, v]) => [id, { n, g, v }]) : []);   // type id -> {name, group, base}
 const BG = BOUNTY ? BOUNTY.groups : [];                                                      // [group name, faction, class, where]
 const ratName = id => BT.has(id) ? BT.get(id).n : `NPC type ${id}`;
@@ -2349,6 +2352,7 @@ async function startLogin(extra) {
   // Optional permission groups, each asked for by its own button and kept for later logins once allowed.
   if (extra === true || extra === "contacts") store.set("ledger.ssoContacts", true);
   if (extra === "intel") store.set("ledger.ssoIntel", true);
+  if (extra === "fittings") store.set("ledger.ssoFit", true);
   store.set("ledger.returnTab", S.tab);                         // come back to the tab you logged in from
   if (!window.isSecureContext || !crypto.subtle) { KT.err = "Logging in needs the website (https), not a file opened from disk."; renderKills(); return; }
   const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
@@ -2356,7 +2360,7 @@ async function startLogin(extra) {
   const state = b64url(crypto.getRandomValues(new Uint8Array(16)));
   try { sessionStorage.setItem("ledger.pkce", JSON.stringify({ verifier, state })); } catch {}
   location.href = SSO.auth + "?" + new URLSearchParams({ response_type: "code", client_id: SSO_CLIENT_ID, redirect_uri: redirectUri(),
-    scope: [SSO.scope, store.get("ledger.ssoContacts") && CONTACT_SCOPES, store.get("ledger.ssoIntel") && INTEL_SCOPES].filter(Boolean).join(" "), state, code_challenge: challenge, code_challenge_method: "S256" });
+    scope: [SSO.scope, store.get("ledger.ssoContacts") && CONTACT_SCOPES, store.get("ledger.ssoIntel") && INTEL_SCOPES, store.get("ledger.ssoFit") && FIT_SCOPES].filter(Boolean).join(" "), state, code_challenge: challenge, code_challenge_method: "S256" });
 }
 // The JWT's middle part is plain JSON (base64url). We check issuer, audience and expiry; the token came straight from CCP.
 function readJwt(tok) {
@@ -2621,6 +2625,39 @@ function fitMaths() {
   }
   return { cpu, pg, cal, cpuOut, pgOut, calOut, lines, slots, used, need };
 }
+// ----- save a checked fit to your character's fittings (ESI POST /characters/{id}/fittings/) -----
+// Only a fit that passed "Check this fit" is sent; nothing goes out until you confirm. Your existing fittings are
+// read first only to warn about a duplicate name; they are never changed or deleted.
+const GCAT = new Map();
+async function groupCategory(gid) {                 // drones (category 18) go in the drone bay, everything else in cargo
+  if (!GCAT.has(gid)) GCAT.set(gid, (await (await fetch(`${ESI}/universe/groups/${gid}/`)).json()).category_id);
+  return GCAT.get(gid);
+}
+async function saveFitToEve() {
+  const s = loadSso(), m = fitMaths(); if (!s || !hasFitScope(s) || !m || FIT.saving) return;
+  FIT.saving = true; FIT.saveMsg = null; FIT.saveErr = null; renderKills();
+  try {
+    const over = ["high", "med", "low", "rig"].filter(k => m.used[k] > m.slots[k]);
+    if (over.length) throw new Error(`Too many ${over.join(", ")} modules for a ${FIT.res.hull.name}; fix the fit first`);
+    const FLAG = { high: "HiSlot", med: "MedSlot", low: "LoSlot", rig: "RigSlot" }, n = { high: 0, med: 0, low: 0, rig: 0 }, items = [];
+    for (const r of FIT.res.rows) {
+      if (r.fitted && FLAG[r.slot]) items.push({ type_id: r.d.id, flag: FLAG[r.slot] + n[r.slot]++, quantity: 1 });
+      else if (r.qty > 0) items.push({ type_id: r.d.id, flag: await groupCategory(r.d.group) === 18 ? "DroneBay" : "Cargo", quantity: r.qty });
+    }
+    const head = FIT.text.split(/\r?\n/)[0].match(/^\[[^,\]]+,\s*([^\]]*)\]/);
+    const name = ((head && head[1].trim()) || "Ledger fit").slice(0, 50);
+    const auth = { Authorization: "Bearer " + await accessToken() };
+    const have = await fetch(`${ESI}/characters/${s.charId}/fittings/`, { headers: auth });
+    if (!have.ok) throw new Error("Couldn't read your saved fittings (ESI " + have.status + "), so nothing was sent");
+    const list = await have.json(), dup = list.some(f => f.name === name && f.ship_type_id === FIT.res.hull.id);
+    if (!confirm(`Save "${name}" (${FIT.res.hull.name}, ${items.length} item lines) to ${s.name}'s fittings?` + (dup ? `\nYou already have a ${FIT.res.hull.name} fitting called "${name}"; this adds a second one.` : "") + `\nYou have ${list.length} saved fittings; nothing else is changed.`)) { FIT.saving = false; return renderKills(); }
+    const r = await fetch(`${ESI}/characters/${s.charId}/fittings/`, { method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, auth),
+      body: JSON.stringify({ name, description: "Saved from Jita Ore Ledger", ship_type_id: FIT.res.hull.id, items }) });
+    if (!r.ok) throw new Error(`ESI fittings replied ${r.status}: ${(await r.text()).slice(0, 160)}`);
+    FIT.saveMsg = `Saved "${name}" to your fittings. In game: Fitting window (Alt+F) > Personal, then "Fit ship" with the ${FIT.res.hull.name} active.`;
+  } catch (e) { FIT.saveErr = e.message; console.error("[ledger] save fit", e); }
+  FIT.saving = false; renderKills();
+}
 function fitBlock() {
   const s = loadSso(), have = hasSkillScope(s);
   let h = `<div style="display:grid;gap:8px"><span class="lbl">Fit check · against your skills</span>`;
@@ -2644,6 +2681,11 @@ function fitBlock() {
     h += `<div class="scroll"><table class="reftab"><thead><tr><th>Module</th><th>Slot</th><th>CPU</th><th>Powergrid</th><th>Needs</th></tr></thead><tbody>${m.lines.map(({ r, c, p }) =>
       `<tr><td>${esc(r.d.name)}</td><td>${r.slot}</td><td>${num(c, 1)}</td><td>${num(p, 1)}</td><td style="font-family:var(--f-body)">${r.d.req.map(([sid, l]) => `<span class="${lvl(sid) >= l ? "up" : "down"}">${esc(skillName(sid))} ${l}</span>`).join(", ")}</td></tr>`).join("")}</tbody></table></div>
       <div class="note">Fitting skills counted: CPU Management ${lvl(SK.CPU)}, Power Grid Management ${lvl(SK.PG)}, Weapon Upgrades ${lvl(SK.WU)}, Advanced Weapon Upgrades ${lvl(SK.AWU)}, Shield Upgrades ${lvl(SK.SU)}. Not counted: other fitting skills, implants and ship role bonuses, so the in-game fitting window has the final word.</div>`;
+    if (!s) h += `<div class="note">Log in to save this fit to your character.</div>`;
+    else if (!hasFitScope(s)) h += `<div class="note">Saving fits to your character needs one more permission. <button class="btn" type="button" data-kt="loginFit">Allow fittings (log in again)</button> Your app at developers.eveonline.com must list <code>esi-fittings.read_fittings.v1</code> and <code>esi-fittings.write_fittings.v1</code>.</div>`;
+    else h += `<div><button class="btn primary" type="button" data-kt="fitSave"${FIT.saving ? " disabled" : ""}>${FIT.saving ? "Saving…" : "Save to EVE"}</button> <span class="note">Adds this fit to ${esc(s.name)}'s saved fittings (you confirm first; existing fittings are never changed).</span></div>`;
+    if (FIT.saveErr) h += `<div class="note" style="color:var(--bad)">${esc(FIT.saveErr)}</div>`;
+    if (FIT.saveMsg) h += `<div class="note" style="color:var(--good)">${esc(FIT.saveMsg)}</div>`;
   }
   return h + `</div>`;
 }
@@ -3004,6 +3046,8 @@ function wireKills() {
     const act = b.dataset.kt;
     if (act === "login") startLogin();
     else if (act === "loginContacts") startLogin(true);
+    else if (act === "loginFit") startLogin("fittings");
+    else if (act === "fitSave") saveFitToEve();
     else if (act === "sync") syncJournal(true);
     else if (act === "logout") logout();
     else if (act === "csv") exportCsv();
