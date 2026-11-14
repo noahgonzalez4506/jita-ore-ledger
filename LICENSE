@@ -1,0 +1,10 @@
+Copyright (c) 2026 noahgonzalez4506. All rights reserved.
+
+This repository and the website built from it (the "Software") are proprietary. No license or other right is granted,
+by implication or otherwise, to copy, modify, merge, publish, distribute, sublicense, sell, reverse engineer,
+decompile, or create derivative works of the Software or any part of it, except as expressly allowed by applicable
+law. Viewing the Software in a web browser to use the website as intended is permitted.
+
+Third-party material: EVE Online data, names and images are the property of CCP hf. "EVE", "EVE Online", "CCP", and
+all related logos and images are trademarks or registered trademarks of CCP hf. The bzip2 decoder loaded at runtime
+from jsDelivr is bzip2.js by antimatter15 under its own license (LGPL).

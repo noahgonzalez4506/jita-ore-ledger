@@ -1,7 +1,8 @@
-# Jita Ore Ledger
+# Tally
 
-A live EVE Online mining cheat sheet: Jita IV-4 prices for every ore grade, moon ore, ice, mineral and moon material, with
-raw / compressed / reprocessed values per m³, a recommended sell-order price, a refine-yield calculator and a hold appraisal tab.
+Personal tool.
 
-Prices come live from [Fuzzwork market aggregates](https://market.fuzzwork.co.uk/) and [ESI](https://esi.evetech.net/).
-Not affiliated with CCP Games. EVE Online and all related names are trademarks of CCP hf.
+© 2026 noahgonzalez4506. All rights reserved. See LICENSE.
+
+© CCP hf. All rights reserved. "EVE", "EVE Online", "CCP", and all related logos and images are trademarks or
+registered trademarks of CCP hf. Not affiliated with or endorsed by CCP hf.
