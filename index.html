@@ -358,7 +358,7 @@ if (!["all", "0", "1", "2", "3"].includes(S.fgrade)) S.fgrade = "all";
 S.fthin = S.fthin === true;
 S.sort = (() => {
   const out = {}, src = S.sort && typeof S.sort === "object" ? S.sort : {};
-  for (const t of ["ores", "moon", "other", "ice", "best", "minerals", "haul", "mine", "rat", "kills"]) {
+  for (const t of ["ores", "moon", "other", "ice", "best", "minerals", "haul", "mine", "rat", "kills", "intel"]) {
     const v = src[t];
     if (Array.isArray(v) && typeof v[0] === "string" && /^[a-z0-9]{1,12}$/i.test(v[0]) && (v[1] === "asc" || v[1] === "desc")) out[t] = [v[0], v[1]];
   }
@@ -719,6 +719,7 @@ const TABS = [
   { id: "mine", name: "Where to mine", sections: [] },
   { id: "rat", name: "Where to rat", sections: [] },
   { id: "kills", name: "Kill tracker", sections: [] },
+  { id: "intel", name: "Intel", sections: [] },
 ];
 const ORE_TABS = ["ores", "moon", "other"];
 const TIER_NAMES = {
@@ -1259,6 +1260,7 @@ async function loadLive() {
   LIVE.busy = false; LIVE.stats = null; RISKMEMO = null;
   if (S.tab === "mine") { renderMineOut(); renderMap(); renderRefineries(); }
   if (S.tab === "rat") { renderRatOut(); }
+  if (S.tab === "intel") renderIntel();
   if (openSys != null) renderSysDossier();
 }
 // Per security band, every system's jumps and NPC kills, sorted, so a system can be ranked against its own band.
@@ -1330,6 +1332,7 @@ function loadGanks() {
     GANK.busy = false; GBY = null; RISKMEMO = null; rebuildHunters();
     if (S.tab === "mine") { renderMineOut(); renderMap(); renderRefineries(); }
     if (S.tab === "rat") renderRatOut();
+    if (S.tab === "intel") renderIntel();
     if (openSys != null) renderSysDossier();
   });
 }
@@ -1859,15 +1862,25 @@ async function loadStationNames(ids) {
   if (!need.length || stnBusy) return;
   stnBusy = true;
   try {
-    const r = await fetch(ESI + "/universe/names/", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(need.slice(0, 500)) });
-    if (!r.ok) throw new Error("ESI names " + r.status);
-    for (const n of await r.json()) STN.set(n.id, n.name);
+    // ESI refuses a whole batch if one id no longer exists (a deleted character): split it until the bad ids are alone.
+    const lookup = async ids => {
+      const r = await fetch(ESI + "/universe/names/", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ids) });
+      noteErrBudget(r);
+      if (r.ok) { for (const n of await r.json()) STN.set(n.id, n.name); return; }
+      if (r.status !== 404 || esiErrLeft < 40) throw new Error("ESI names " + r.status + (esiErrLeft < 40 ? " (pausing to spare ESI's error limit)" : ""));
+      if (ids.length === 1) { STN.set(ids[0], "(no longer exists)"); return; }
+      const half = Math.ceil(ids.length / 2); await lookup(ids.slice(0, half)); await lookup(ids.slice(half));
+    };
+    await lookup(need.slice(0, 500));
     store.set("ledger.stn", Object.fromEntries([...STN].slice(-400)));     // keep the cache small
   } catch (e) { console.error("[ledger] station names", e); }
   stnBusy = false;
-  renderRefineries(); if (openSys != null) renderSysDossier();
+  renderRefineries(); if (openSys != null) renderSysDossier(); if (S.tab === "intel") renderIntel();
 }
 const stName = id => STN.get(id) || `Station ${id}`;
+// ESI's error budget (100 per window): read from each reply; lookups that would spend more errors stop while it's low.
+let esiErrLeft = 100;
+const noteErrBudget = r => { const v = parseFloat(r.headers.get("x-esi-error-limit-remain")); if (isFinite(v)) esiErrLeft = v; };
 
 // Your yield at an NPC station: its base x your skills x your implant (the same maths as the Settings calculator).
 function npcYield(eff) { const y = calcYield(S.yc); return eff * y.skills * (1 + y.imp); }
@@ -2327,15 +2340,18 @@ const redirectUri = () => location.origin + location.pathname;   // must match t
 const b64url = bytes => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const loadSso = () => store.get("ledger.sso");
 const KT = { busy: false, err: null, note: null, sel: null };
-async function startLogin(withContacts) {
-  if (withContacts) store.set("ledger.ssoContacts", true);           // keep asking for them on later logins once allowed
+async function startLogin(extra) {
+  // Optional permission groups, each asked for by its own button and kept for later logins once allowed.
+  if (extra === true || extra === "contacts") store.set("ledger.ssoContacts", true);
+  if (extra === "intel") store.set("ledger.ssoIntel", true);
+  store.set("ledger.returnTab", S.tab);                         // come back to the tab you logged in from
   if (!window.isSecureContext || !crypto.subtle) { KT.err = "Logging in needs the website (https), not a file opened from disk."; renderKills(); return; }
   const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
   const challenge = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
   const state = b64url(crypto.getRandomValues(new Uint8Array(16)));
   try { sessionStorage.setItem("ledger.pkce", JSON.stringify({ verifier, state })); } catch {}
   location.href = SSO.auth + "?" + new URLSearchParams({ response_type: "code", client_id: SSO_CLIENT_ID, redirect_uri: redirectUri(),
-    scope: store.get("ledger.ssoContacts") ? SSO.scope + " " + CONTACT_SCOPES : SSO.scope, state, code_challenge: challenge, code_challenge_method: "S256" });
+    scope: [SSO.scope, store.get("ledger.ssoContacts") && CONTACT_SCOPES, store.get("ledger.ssoIntel") && INTEL_SCOPES].filter(Boolean).join(" "), state, code_challenge: challenge, code_challenge_method: "S256" });
 }
 // The JWT's middle part is plain JSON (base64url). We check issuer, audience and expiry; the token came straight from CCP.
 function readJwt(tok) {
@@ -2360,7 +2376,7 @@ async function finishLogin() {
   if (!code) return;
   history.replaceState(null, "", location.pathname + location.hash);      // the code is single-use; take it out of the address bar
   let saved = null; try { saved = JSON.parse(sessionStorage.getItem("ledger.pkce")); sessionStorage.removeItem("ledger.pkce"); } catch {}
-  S.tab = "kills"; save();
+  S.tab = store.get("ledger.returnTab") || "kills"; save();
   if (!saved || saved.state !== state) { KT.err = "That login didn't match the one this page started (state check). Please log in again."; return; }
   try {
     saveTokens(await tokenCall({ grant_type: "authorization_code", code, client_id: SSO_CLIENT_ID, code_verifier: saved.verifier }));
@@ -2716,8 +2732,9 @@ async function resolveHunterNames() {
     // ESI refuses a whole batch if one id no longer exists (e.g. a deleted character): split it until the bad ids are alone.
     const lookup = async ids => {
       const r = await fetch(ESI + "/universe/names/", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ids) });
+      noteErrBudget(r);
       if (r.ok) { for (const x of await r.json()) if (HL.e[x.id]) { HL.e[x.id].n = x.name; HL.e[x.id].cat = x.category; } return; }
-      if (r.status !== 404) throw new Error("ESI names replied " + r.status);
+      if (r.status !== 404 || esiErrLeft < 40) throw new Error("ESI names replied " + r.status + (esiErrLeft < 40 ? " (pausing to spare ESI's error limit)" : ""));
       if (ids.length === 1) { delete HL.e[ids[0]]; return; }                 // gone from the game: drop it
       const half = Math.ceil(ids.length / 2);
       await lookup(ids.slice(0, half)); await lookup(ids.slice(half));
@@ -2842,6 +2859,7 @@ function loadBlops() {
     } catch (e) { BLO.err = e.message; console.error("[ledger] black ops", e); }
     BLO.busy = false; BSYS = null; BMEMO = new Map(); rebuildHunters();
     if (S.tab === "rat") { renderRatOut(); renderMap("rat"); }
+    if (S.tab === "intel") renderIntel();
     if (openSys != null) renderSysDossier();
   });
 }
@@ -3015,6 +3033,159 @@ function wireKills() {
   main.addEventListener("input", e => { if (S.tab === "kills" && e.target.id === "ktQ") { ktQuery = e.target.value; const pos = e.target.selectionStart; renderKills(); const q = $("ktQ"); if (q) { q.value = ktQuery; q.focus(); q.setSelectionRange(pos, pos); } } });
 }
 
+// ---------- Intel: where you are, where you're going ----------
+// With the intel permissions the page checks where you are about once a minute while it's open and you're online
+// (ESI location / ship / online), shows that system's risk and the hunters active around it, and plans routes with
+// risk per jump. "Set route in EVE" adds every system of the chosen route as an autopilot waypoint (on your click only).
+const INTEL_SCOPES = "esi-location.read_location.v1 esi-location.read_online.v1 esi-location.read_ship_type.v1 esi-ui.write_waypoint.v1";
+const hasIntelScope = s => !!s && INTEL_SCOPES.split(" ").every(x => (s.scopes || []).includes(x));
+const IN = { loc: null, ship: null, online: null, t: 0, err: null, busy: false, to: "", from: "", mode: "safe", msg: null, wpBusy: false };
+{ const c = store.get("ledger.intel"); if (c) Object.assign(IN, { to: c.to || "", from: c.from || "", mode: c.mode === "short" ? "short" : "safe" }); }
+const saveIntel = () => store.set("ledger.intel", { to: IN.to, from: IN.from, mode: IN.mode });
+async function pollLocation() {
+  const s = loadSso(); if (!s || !hasIntelScope(s) || IN.busy || document.hidden || IN.paused === s.access || Date.now() < (IN.coolUntil || 0)) return;
+  IN.busy = true;
+  try {
+    const get = async path => {
+      const r = await fetch(`${ESI}/characters/${s.charId}/${path}/`, { headers: { Authorization: "Bearer " + await accessToken() } });
+      noteErrBudget(r);
+      if (r.status === 401 || r.status === 403) { IN.paused = (loadSso() || {}).access; throw new Error(`ESI refused the location check (${r.status}): log in again with "Allow intel"`); }
+      if (r.status === 420 || r.status === 429) { IN.coolUntil = Date.now() + 5 * 60e3; throw new Error("ESI asked us to slow down; location checks pause for 5 minutes"); }
+      if (!r.ok) throw new Error(`ESI ${path} replied ${r.status}`);
+      return r.json();
+    };
+    IN.online = await get("online");
+    if (IN.online.online) {
+      IN.loc = await get("location"); IN.ship = await get("ship");
+      if (IN.ship && !TDATA.has(IN.ship.ship_type_id)) typeData(IN.ship.ship_type_id).then(() => renderIntel()).catch(() => {});
+    }
+    IN.t = Date.now(); IN.err = null;
+  } catch (e) { IN.err = e.message; console.error("[ledger] location", e); }
+  IN.busy = false; renderIntel();
+}
+// Black Ops pilots and gankers active around a system lately (from the same kills that build the hunter list).
+function huntersNear(s, days = 7) {
+  const cut = Date.now() - days * 86400e3, who = new Map();
+  for (const [sid, t, , rat, , bl = [], tk = []] of BLO.list || []) {
+    if (t < cut) continue;
+    const k = SY_ID.get(sid); if (!k) continue;
+    const ly = Math.hypot(k.x - s.x, k.z - s.z) / LY_UNITS; if (ly > 8) continue;
+    for (const [c, co, al] of [...bl, ...tk]) {
+      const e = who.get(c) || { n: 0, rat: 0, last: 0, near: k, ly, role: "" }; e.n++; e.rat += rat; if (t > e.last) { e.last = t; e.near = k; e.ly = ly; } e.group = al || co; who.set(c, e);
+    }
+  }
+  const gk = new Map();   // gankers within 3 jumps (highsec ganks, 72 h)
+  const r3 = routesFrom(s.i, "short").dist;
+  for (const [sid, t, , att] of GANK.list || []) { const k = SY_ID.get(sid); if (!k || r3[k.i] < 0 || r3[k.i] > 3) continue; for (const [c] of att || []) { const e = gk.get(c) || { n: 0, last: 0, near: k }; e.n++; e.last = Math.max(e.last, t); gk.set(c, e); } }
+  return { blops: [...who].sort((a, b) => b[1].n - a[1].n), gank: [...gk].sort((a, b) => b[1].n - a[1].n) };
+}
+const nameOf = id => (HL.e[id] && HL.e[id].n) || STN.get(id) || `#${id}`;
+// A plain verdict for being in (or ratting in) one system right now.
+function sysVerdict(s) {
+  const r = riskOf(s), b = blopsNear(s), lh = LIVE.kills ? LIVE.kills[s.id] || [0, 0, 0] : null;
+  const hot = (b && b.rat >= 3) || r.lvl >= 3 || (lh && lh[0] + lh[2] >= 3);
+  const warm = (b && b.n >= 10) || r.lvl === 2 || (lh && lh[0] + lh[2] > 0);
+  return hot ? ["Dangerous", "bad"] : warm ? ["Caution", "thin"] : ["Quiet", "instant"];
+}
+function hereCard() {
+  const s = loadSso();
+  if (!s) return `<div class="rec"><span class="lbl">You are here</span><div class="note">Log in on the Kill tracker tab first, then allow intel here.</div></div>`;
+  if (!hasIntelScope(s)) return `<div class="rec"><span class="lbl">You are here</span><div>Let the page see which system you're in and what you fly (checked about once a minute while this page is open and you're online), and set autopilot routes on your click.</div>
+    <div><button class="btn primary" type="button" data-in="allow">Allow intel (log in again)</button> <span class="note">Your app at developers.eveonline.com must list ${INTEL_SCOPES.split(" ").map(x => `<code>${x}</code>`).join(", ")}.</span></div></div>`;
+  if (IN.err) return `<div class="rec"><span class="lbl">You are here</span><div class="note" style="color:var(--bad)">${esc(IN.err)}</div></div>`;
+  if (!IN.online) return `<div class="rec"><span class="lbl">You are here</span><div class="note">Checking…</div></div>`;
+  if (!IN.online.online) return `<div class="rec"><span class="lbl">You are here</span><div>${esc(s.name)} is offline${IN.online.last_logout ? ` (logged out ${ago(Date.parse(IN.online.last_logout))})` : ""}. Plan a route below, or pick a system to check.</div></div>`;
+  const here = IN.loc && SY_ID.get(IN.loc.solar_system_id);
+  if (!here) return `<div class="rec"><span class="lbl">You are here</span><div>${esc(s.name)} is in a system this page doesn't cover (wormhole space or Pochven).</div></div>`;
+  const [v, cls] = sysVerdict(here), r = riskOf(here), b = blopsNear(here), lh = LIVE.kills ? LIVE.kills[here.id] || [0, 0, 0] : null;
+  const hn = huntersNear(here), shipT = IN.ship && TDATA.get(IN.ship.ship_type_id);
+  loadStationNames([...hn.blops.slice(0, 8), ...hn.gank.slice(0, 5)].map(([c]) => c).filter(c => !HL.e[c]));
+  return `<div class="rec"><span class="lbl">You are here · ${utc(IN.t)} EVE</span>
+    <div style="display:flex;flex-wrap:wrap;gap:6px 16px;align-items:baseline"><button type="button" class="linkb" data-sys="${here.i}" style="font:700 20px var(--f-display)">${esc(here.n)}</button> ${secTag(here)}
+      <span>${esc(SYS.regions[here.reg])}</span><span class="pill ${cls}">${v}</span>${IN.loc.station_id ? `<span class="note">docked</span>` : IN.loc.structure_id ? `<span class="note">in a structure</span>` : ""}</div>
+    <div class="note">Flying ${esc(IN.ship.ship_name || "")}${shipT ? ` (${esc(shipT.name)})` : ""}.</div>
+    <div class="grid4">${kv("Kills last hour", lh ? `${lh[0]} ship / ${lh[2]} pod` : "…", lh ? `${num(lh[1])} NPC · ESI hour to ${utc(LIVE.asOf)}` : "")}${kv("Gank risk", RISK[r.lvl], r.why || "nothing recent")}
+      ${kv("Black Ops within 8 ly", b ? num(b.n) : "…", b ? `${b.rat} ratting ships · nearest ${b.nearest ? esc(b.nearest.s.n) + " " + b.nearest.ly.toFixed(1) + " ly" : "—"}` : "")}
+      ${kv("Hunters active nearby", num(hn.blops.length + hn.gank.length), "Black Ops pilots and tackle (8 ly, 7 days) + gankers (3 jumps, 72 h)")}</div>
+    ${hn.blops.length ? `<div class="note"><b>Black Ops nearby:</b> ${hn.blops.slice(0, 8).map(([c, e]) => `${esc(nameOf(c))} (${e.n} kill${e.n > 1 ? "s" : ""}, last ${ago(e.last)} in ${esc(e.near.n)})`).join(", ")}</div>` : ""}
+    ${hn.gank.length ? `<div class="note"><b>Gankers within 3 jumps:</b> ${hn.gank.slice(0, 5).map(([c, e]) => `${esc(nameOf(c))} (${e.n})`).join(", ")}</div>` : ""}</div>`;
+}
+// Route between two systems by name (from = where you are, if blank), both route types, with risk per jump.
+function routeCard() {
+  const here = IN.loc && IN.online && IN.online.online ? SY_ID.get(IN.loc.solar_system_id) : null;
+  const from = SY_NAME.get((IN.from || "").toLowerCase()) || here || SY_NAME.get(M.home.toLowerCase());
+  const to = SY_NAME.get((IN.to || "").toLowerCase());
+  let h = "";
+  const fromIn = $("inFrom"); if (fromIn) fromIn.placeholder = from ? from.n : "";
+  if (!to) return `<div class="note">Type a destination. "From" is where you are (when known), else your home ${esc(M.home)}.</div>`;
+  const rt = routesFrom(from.i, IN.mode), path = []; for (let x = to.i; x >= 0; x = rt.prev[x]) path.push(x); path.reverse();
+  if (rt.dist[to.i] < 0 || path[0] !== from.i) return `<div class="note">No gate route from ${esc(from.n)} to ${esc(to.n)}.</div>`;
+  const bs = blopsBySystem();
+  const hops = path.map(i => { const e = bs && bs.get(i); return { s: SY[i], r: riskOf(SY[i]), bo: e && Date.now() - e.last < 48 * 3600e3 ? e : null }; });
+  const bad = hops.slice(1).filter(x => x.r.lvl >= 2), unsafe = hops.slice(1).filter(x => x.s.band !== "high").length;
+  const blopsHot = hops.slice(1).filter(x => x.bo);
+  const [v, cls] = bad.some(x => x.r.lvl >= 3) ? ["Dangerous", "bad"] : bad.length || unsafe || blopsHot.length ? ["Caution", "thin"] : ["Quiet", "instant"];
+  const other = routesFrom(from.i, IN.mode === "safe" ? "short" : "safe").dist[to.i];
+  const s = loadSso();
+  h += `<div class="facts"><span class="pill ${cls}">${v}</span><span>${path.length - 1} jumps (${IN.mode === "safe" ? "highsec-preferred" : "shortest"}; the other way is ${other} jumps)</span><span>${unsafe} outside highsec</span><span>${bad.length} at elevated or high gank risk</span><span>${blopsHot.length} with a Black Ops kill in the system in the last 48 h</span></div>
+    <div class="route">${hops.map(x => `<span class="hop" title="${esc(x.r.why || "nothing recent")}${x.bo ? ` · ${x.bo.n} Black Ops kill${x.bo.n > 1 ? "s" : ""} here, latest ${ago(x.bo.last)}` : ""}"><button type="button" class="linkb" data-sys="${x.s.i}">${esc(x.s.n)}</button> ${secTag(x.s)}${x.r.lvl ? ` ${riskPill(x.r.lvl, x.r.why)}` : ""}${x.bo ? ` <span class="pill bad" title="Black Ops kill in this system, latest ${ago(x.bo.last)}">BO</span>` : ""}</span>`).join(`<span class="muted">›</span>`)}</div>
+    <div class="mbar"><button class="btn primary" type="button" data-in="wp"${!s || !hasIntelScope(s) || IN.wpBusy ? " disabled" : ""}>${IN.wpBusy ? "Setting…" : `Set this route in EVE (${path.length - 1} waypoints)`}</button>
+      ${!s || !hasIntelScope(s) ? `<span class="note">Needs the intel permission (above).</span>` : `<span class="note">Replaces your current autopilot waypoints with every system on this route, so the autopilot can't take a different way.</span>`}</div>`;
+  if (IN.msg) h += `<div class="note">${esc(IN.msg)}</div>`;
+  IN.path = path;
+  return h;
+}
+async function setWaypoints() {
+  const s = loadSso(); if (!s || !hasIntelScope(s) || !IN.path || IN.wpBusy) return;
+  const hops = IN.path.slice(1);
+  if (!confirm(`Set ${hops.length} autopilot waypoints in EVE for ${s.name}?\nYour current waypoints will be cleared.`)) return;
+  IN.wpBusy = true; IN.msg = null; renderIntel();
+  try {
+    for (let k = 0; k < hops.length; k++) {
+      const q = new URLSearchParams({ add_to_beginning: "false", clear_other_waypoints: k === 0 ? "true" : "false", destination_id: SY[hops[k]].id });
+      const r = await fetch(`${ESI}/ui/autopilot/waypoint/?${q}`, { method: "POST", headers: { Authorization: "Bearer " + await accessToken() } });
+      if (!r.ok) throw new Error(`ESI waypoint replied ${r.status} after ${k} of ${hops.length}` + (r.status === 404 ? " (are you logged in to the game?)" : ""));
+    }
+    IN.msg = `Done: ${hops.length} waypoints set. Check the route in game before you undock.`;
+  } catch (e) { IN.msg = e.message; console.error("[ledger] waypoints", e); }
+  IN.wpBusy = false; renderIntel();
+}
+function renderIntel() {
+  const main = $("main"); if (S.tab !== "intel" || !main) return;
+  if (main.dataset.view !== "intel") {
+    main.dataset.view = "intel";
+    main.innerHTML = `<section class="block"><div class="bhead"><h2>Intel</h2><span class="note">Where you are, what's around you, and the risk on the way to anywhere you want to go. Built from ESI and zKillboard (kills, ganks, Black Ops drops) and your hunter list. Risk is from recorded kills: a quiet system can still hold a hunter who hasn't struck yet.</span></div>
+      <div id="inHere"></div>
+      <div style="display:grid;gap:8px"><span class="lbl">Route planner</span>
+        <div class="mbar"><div class="ctl"><label for="inFrom">From</label><input id="inFrom" list="inList" value="${esc(IN.from)}" autocomplete="off" maxlength="40"></div>
+          <div class="ctl"><label for="inTo">To</label><input id="inTo" list="inList" value="${esc(IN.to)}" placeholder="System name" autocomplete="off" maxlength="40"></div>
+          <div class="ctl"><span class="lbl">Prefer</span><div class="seg" id="inMode">${ROUTES.map(([v, n]) => `<button type="button" data-v="${v}">${n}</button>`).join("")}</div></div></div>
+        <datalist id="inList">${SY.map(x => `<option value="${esc(x.n)}">`).join("")}</datalist>
+        <div id="inRoute" style="display:grid;gap:8px"></div></div></section>`;
+  }
+  $("inMode").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === IN.mode));
+  for (const id of ["inHere", "inRoute"]) {
+    const el = $(id), f = captureFocus(el);
+    el.innerHTML = id === "inHere" ? hereCard() : routeCard();
+    restoreFocus(el, f);
+  }
+}
+function wireIntel() {
+  const main = $("main");
+  main.addEventListener("click", e => {
+    if (S.tab !== "intel") return;
+    const b = e.target.closest("[data-in]");
+    if (b && b.dataset.in === "allow") startLogin("intel");
+    if (b && b.dataset.in === "wp") setWaypoints();
+    const m = e.target.closest("#inMode button"); if (m) { IN.mode = m.dataset.v; saveIntel(); renderIntel(); }
+  });
+  main.addEventListener("input", e => {
+    if (S.tab !== "intel") return;
+    if (e.target.id === "inTo" || e.target.id === "inFrom") { IN[e.target.id === "inTo" ? "to" : "from"] = e.target.value; IN.msg = null; saveIntel(); renderIntel(); }
+  });
+}
+setInterval(pollLocation, 60e3);
+
 let openSys = null;
 function openSystem(i) {
   const trigger = document.activeElement;
@@ -3077,10 +3248,13 @@ function render() {
   veldCache = null;
   FIL = filters(); CNT = { shown: 0, total: 0 };
   if ($("fbar").dataset.tab !== tab.id) buildFbar();
-  $("controls").hidden = tab.id === "mine" || tab.id === "rat" || tab.id === "kills";      // price, layout and yield settings don't apply to systems
+  $("controls").hidden = tab.id === "mine" || tab.id === "rat" || tab.id === "kills" || tab.id === "intel";      // price, layout and yield settings don't apply to systems
   if (tab.id === "haul") {
     if (main.dataset.view !== "haul") { buildHaulShell(main); main.dataset.view = "haul"; }
     renderHaulOut();
+  } else if (tab.id === "intel") {
+    if (!Object.keys(HL.e).length || !HL.t || Date.now() - HL.t > 3600e3) rebuildHunters();   // names for the hunters shown here
+    renderIntel(); loadLive(); loadGanks(); loadBlops(); pollLocation();
   } else if (tab.id === "kills") {
     if (main.dataset.view !== "kills") { main.dataset.view = "kills"; renderKills(); }
     if (loadSso()) syncJournal(false);
@@ -3397,8 +3571,8 @@ async function refresh(manual) {
   refreshing = false;
   status(); render();
 }
-finishLogin().then(() => { if (S.tab === "kills") renderKills(); });   // only does anything when ?code= is in the address bar
-initControls(); wireKills(); refresh(false); render();   // refresh first: it zeroes the counters before render() queues any lookups
+finishLogin().then(() => { if (S.tab === "kills") renderKills(); if (S.tab === "intel") { pollLocation(); renderIntel(); } });   // only does anything when ?code= is in the address bar
+initControls(); wireKills(); wireIntel(); refresh(false); render();   // refresh first: it zeroes the counters before render() queues any lookups
 setInterval(() => { if (!document.hidden && !busy()) refresh(false); }, 10 * 60e3);
 // Where to mine: ganks every 5 min (GANK_TTL) and ESI kills/jumps when they expire, only while that tab is on screen.
 setInterval(() => { if (S.tab === "mine" && !document.hidden) { loadGanks(); loadLive(); } }, 60e3);
