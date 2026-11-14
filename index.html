@@ -1297,7 +1297,7 @@ function profile(s) {
 // 5 minutes while the tab is open, and share zKillboard's request spacing with the dossier lookups.
 const GANK = { list: null, t: 0, err: null, busy: false, retryAt: 0, capped: false };
 const GANK_TTL = 5 * 60e3, GANK_WIN = 72 * 3600e3;
-{ const c = store.get("ledger.gank"); if (c && Array.isArray(c.list)) Object.assign(GANK, { list: c.list, t: c.t, capped: c.capped }); }
+{ const c = store.get("ledger.gank"); if (c && Array.isArray(c.list) && (!c.list.length || Array.isArray(c.list[0][3]))) Object.assign(GANK, { list: c.list, t: c.t, capped: c.capped }); }
 let GBY = null;                                  // system id -> {n24, n72, last (ms), isk}; rebuilt when ganks reload
 function ganksBy() {
   if (GBY) return GBY;
@@ -1319,14 +1319,15 @@ function loadGanks() {
     try {
       // zKillboard serves only the latest 200 for this list (paging is refused), which is usually about 3 days.
       const list = await zkGet("https://zkillboard.com/api/kills/label/ganked/");
-      const out = list.map(k => [k.solar_system_id, Date.parse(k.killmail_time), (k.zkb && k.zkb.totalValue) || 0]);
+      // [system, time, ISK, player attackers [[character, corporation, alliance]]] (the attackers feed the hunter list)
+      const out = list.map(k => [k.solar_system_id, Date.parse(k.killmail_time), (k.zkb && k.zkb.totalValue) || 0, k.attackers.filter(a => a.character_id).map(a => [a.character_id, a.corporation_id || 0, a.alliance_id || 0])]);
       const oldest = Math.min(...out.map(x => x[1]));
       const capped = list.length >= 200 && Date.now() - oldest < GANK_WIN ? oldest : false;   // when set: the data starts here, not 72 h back
       const keep = out.filter(x => Date.now() - x[1] <= GANK_WIN);
       Object.assign(GANK, { list: keep, t: Date.now(), err: null, capped });
       store.set("ledger.gank", { list: keep, t: GANK.t, capped });
     } catch (e) { GANK.err = e.message; GANK.retryAt = Date.now() + 120e3; console.error("[ledger] ganks", e); }
-    GANK.busy = false; GBY = null; RISKMEMO = null;
+    GANK.busy = false; GBY = null; RISKMEMO = null; rebuildHunters();
     if (S.tab === "mine") { renderMineOut(); renderMap(); renderRefineries(); }
     if (S.tab === "rat") renderRatOut();
     if (openSys != null) renderSysDossier();
@@ -1525,8 +1526,8 @@ function ratLayer() {
 function renderMap(which) {
   which = which || (S.tab === "rat" ? "rat" : "mine");
   const cx = MAPCTX[which], el = $(cx.el); if (!el || !SYS) return;
-  const L = which === "rat" ? ratLayer() : gankLayer(), band = cx.band(), region = cx.region();
-  const key = [M.home, M.route, band, region, L.key].join("|");
+  const L = which === "rat" ? (R.layer === "blops" ? blopsLayer() : ratLayer()) : gankLayer(), band = cx.band(), region = cx.region();
+  const key = [M.home, M.route, band, region, which === "rat" ? R.layer : "", L.key].join("|");
   if (key === mapKeys[which]) return;
   mapKeys[which] = key;
   $(cx.sum).textContent = L.sum;
@@ -1986,10 +1987,11 @@ const R_KEYS = [
   ["sec", "Rat strength", "(1 - true security) / 2: lower security spawns bigger rats and better sites"],
   ["near", "Near home", "1 - jumps from home / reach (your max jumps, or 20)"],
 ];
-const RDEF = { band: "low", region: "all", maxj: "", q: "", w: { pay: 25, quiet: 15, ratters: 20, safe: 20, sec: 10, near: 10 } };
+const RDEF = { layer: "rats", band: "low", region: "all", maxj: "", q: "", w: { pay: 25, quiet: 15, ratters: 20, safe: 20, sec: 10, near: 10 } };
 const R = (() => {
   const s = Object.assign({}, RDEF, store.get("ledger.rat") || {});
   if (!BANDS.some(([v]) => v === s.band)) s.band = RDEF.band;
+  if (s.layer !== "blops") s.layer = "rats";
   if (s.region !== "all" && !(SYS && SYS.regions.includes(s.region))) s.region = "all";
   if (s.maxj !== "" && !(Number.isInteger(s.maxj) && s.maxj >= 0 && s.maxj <= 99)) s.maxj = "";
   s.q = typeof s.q === "string" ? s.q.slice(0, 40) : "";
@@ -2164,6 +2166,8 @@ function ratPills(p) {
   const out = [];
   if (p.inc) out.push(`<span class="pill bad" title="Sansha incursion here (${esc(p.inc.state)}): normal rats are replaced by incursion fleets">incursion</span>`);
   if (p.pvpH > 0) out.push(`<span class="pill bad" title="Ship and pod kills in the last hour">${p.pvpH} kill${p.pvpH > 1 ? "s" : ""}</span>`);
+  const bo = blopsNear(p.s);
+  if (bo && bo.rat > 0) out.push(`<span class="pill bad" title="${bo.rat} ratting ship${bo.rat > 1 ? "s" : ""} killed by Black Ops within 8 ly recently">Black Ops hunting</span>`);
   if (p.pn < 0.25) out.push(`<span class="pill instant" title="Fewer NPC kills than ${Math.round((1 - p.pn) * 100)}% or more of ${BAND_NAME[p.s.band]} systems">unratted</span>`);
   else if (p.pn >= 0.9) out.push(`<span class="pill thin" title="More NPC kills than ${Math.floor(p.pn * 100)}% of ${BAND_NAME[p.s.band]} systems">heavily ratted</span>`);
   return out.join(" ");
@@ -2193,7 +2197,7 @@ function buildRatShell(main) {
     <button class="btn" type="button" id="rwReset">Reset weights</button>
     <p class="hint">Score = 100 × Σ(weight × input) ÷ Σ(weights). Each input runs 0 to 1: ${R_KEYS.map(([, n, why]) => `${n} = ${esc(why)}`).join("; ")}.</p>
   </div></details>
-  <details class="settings" id="rmapBox" open><summary>Ratting activity map · <span id="rmapSum">loading…</span></summary><div class="gmapwrap" id="ratMap"></div></details>
+  <details class="settings" id="rmapBox" open><summary>Map · <span id="rmapSum">loading…</span></summary><div class="seg" id="rlayer" role="group" aria-label="Map layer" style="margin:4px 12px 0"><button type="button" data-v="rats">Ratting activity</button><button type="button" data-v="blops">Black Ops kills</button></div><div class="gmapwrap" id="ratMap"></div></details>
   <div id="ratOut" style="display:grid;gap:14px"></div></section>`;
   syncRatBar();
   const home = $("rHome"), hint = $("rHomeHint"), hint0 = hint.textContent;
@@ -2207,6 +2211,7 @@ function buildRatShell(main) {
   home.addEventListener("input", () => tryHome(false));
   home.addEventListener("change", () => tryHome(true));
   $("rroute").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; M.route = b.dataset.v; saveM(); syncRatBar(); renderRatOut(); renderMap("rat"); });
+  $("rlayer").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; R.layer = b.dataset.v; saveR(); syncRatBar(); renderMap("rat"); });
   $("rq").addEventListener("input", e => { R.q = e.target.value; saveR(); RPAGE = 100; renderRatOut(); });
   $("rband").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; R.band = b.dataset.v; saveR(); RPAGE = 100; syncRatBar(); renderRatOut(); renderMap("rat"); });
   $("rreg").addEventListener("change", e => { R.region = e.target.value; saveR(); RPAGE = 100; renderRatOut(); renderMap("rat"); });
@@ -2230,6 +2235,7 @@ function syncRatBar() {
   $("rHome").value = M.home; $("rq").value = R.q; $("rreg").value = R.region; $("rmax").value = R.maxj;
   $("rband").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === R.band));
   $("rroute").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === M.route));
+  $("rlayer").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === R.layer));
   $("rw").querySelectorAll("input[data-w]").forEach(r => { r.value = R.w[r.dataset.w]; });
   syncRatWeights();
 }
@@ -2240,7 +2246,7 @@ function renderRatOut() {
   const rows = ratRows().sort((a, b) => b.score - a.score || a.d - b.d || a.s.n.localeCompare(b.s.n));
   const getters = { name: p => p.s.n, sec: p => p.s.sec, region: p => SYS.regions[p.s.reg], rats: p => p.fac.name, dist: p => p.d,
     risk: p => { const r = routeRisk(p.s.i); return r.lvl * 1000 + r.n; }, pay: p => p.pay, npc: p => p.npc, jumps: p => p.j7, pvp: p => p.pvp,
-    mil: p => p.sov && p.sov.mil != null ? p.sov.mil : null, score: p => p.score };
+    mil: p => p.sov && p.sov.mil != null ? p.sov.mil : null, score: p => p.score, blops: p => { const b = blopsNear(p.s); return b ? b.n : null; } };
   const list = applySort(rows, getters).list;
   const basis = K24.npc ? `NPC kills: last ${K24.hours} h (EVE Ref, to ${esc((K24.until || "").slice(11, 16))} UTC)` : K24.busy ? "NPC kills: 7-day average while the last 24 h load…" : `NPC kills: 7-day average${K24.err ? ` (24 h failed: ${esc(K24.err)})` : ""}`;
   let h = `<div class="note">${basis}. Bounties: ${esc(RAT.merMonth)} economic report. Jumps and ship kills: 7-day average to ${esc(RAT.jumpsMeta.until)} UTC${LIVE.kills ? `; last hour to ${utc(LIVE.asOf)} EVE` : ""}. Sovereignty: ${SOV.by ? `ESI, ${utc(SOV.t)} EVE` : SOV.err ? esc(SOV.err) : "loading…"}.</div>`;
@@ -2249,10 +2255,10 @@ function renderRatOut() {
     <div class="picks">${best.map(p => `<button type="button" class="pick" data-sys="${p.s.i}"><b>${esc(p.s.n)}</b><span>${secTag(p.s)} <span class="sc">${Math.round(p.score)}</span></span><small>${esc(p.fac.name)} · ${p.d} jumps · ${num(p.npc, 0)} NPC kills/h · ${iskShort(p.pay)}/mo region avg</small></button>`).join("")}</div></div>`;
   if (!rows.length) h += `<div class="empty"><b>No systems match these filters.</b><span>Widen the max jumps, pick another region or security band, or clear the search.</span></div>`;
   else {
-    h += `<div class="scroll"><table class="mt"><thead><tr>${sortTh("System", "name", true, "rowh")}${sortTh("Sec", "sec", false)}${sortTh("Region", "region", true)}${sortTh("Rats", "rats", true)}${sortTh("Jumps", "dist", false)}${sortTh("Route risk", "risk", false)}${sortTh("Bounty / system / mo", "pay", false)}${sortTh("NPC kills/h", "npc", false)}${sortTh("Gate jumps/h", "jumps", false)}${sortTh("Kills/h", "pvp", false)}${sortTh("Military", "mil", false)}${sortTh("Score", "score", false)}</tr></thead><tbody>`;
+    h += `<div class="scroll"><table class="mt"><thead><tr>${sortTh("System", "name", true, "rowh")}${sortTh("Sec", "sec", false)}${sortTh("Region", "region", true)}${sortTh("Rats", "rats", true)}${sortTh("Jumps", "dist", false)}${sortTh("Route risk", "risk", false)}${sortTh("Bounty / system / mo", "pay", false)}${sortTh("NPC kills/h", "npc", false)}${sortTh("Gate jumps/h", "jumps", false)}${sortTh("Kills/h", "pvp", false)}${sortTh("Military", "mil", false)}${sortTh("Black Ops ≤8 ly", "blops", false)}${sortTh("Score", "score", false)}</tr></thead><tbody>`;
     for (const p of list.slice(0, RPAGE)) {
       h += `<tr data-sys="${p.s.i}" tabindex="0"><td class="rowh">${esc(p.s.n)} ${ratPills(p)}</td><td>${secTag(p.s)}</td><td class="txt">${esc(SYS.regions[p.s.reg])}</td><td class="txt" title="${esc(p.fac.why)}">${esc(p.fac.name)}${p.fac.sure ? "" : " ?"}</td><td>${p.d}</td><td>${routeCell(p.s.i)}</td>
-        <td>${iskShort(p.pay)}</td><td>${num(p.npc, 1)}</td><td>${num(p.j7, 1)}</td><td>${num(p.pvp, 2)}</td><td>${p.sov && p.sov.mil != null ? p.sov.mil : `<span class="muted">—</span>`}</td><td><span class="sc">${Math.round(p.score)}</span></td></tr>`;
+        <td>${iskShort(p.pay)}</td><td>${num(p.npc, 1)}</td><td>${num(p.j7, 1)}</td><td>${num(p.pvp, 2)}</td><td>${p.sov && p.sov.mil != null ? p.sov.mil : `<span class="muted">—</span>`}</td><td>${(() => { const b = blopsNear(p.s); return b ? `<span title="${b.rat} ratting ships among them${b.nearest ? `; nearest ${esc(b.nearest.s.n)} ${b.nearest.ly.toFixed(1)} ly` : ""}">${b.n}</span>` : "…"; })()}</td><td><span class="sc">${Math.round(p.score)}</span></td></tr>`;
     }
     h += `</tbody></table></div>`;
     if (list.length > RPAGE) h += `<button type="button" class="btn" data-rmore style="justify-self:start">Show ${Math.min(100, list.length - RPAGE)} more</button>`;
@@ -2288,6 +2294,7 @@ function ratGrid(p) {
     ${kv("Ship + pod kills/h", num(p.pvp, 2), `${K24.pvp ? "24 h" : "7-day"} average · newest ESI hour ${isNaN(p.pvpH) ? "…" : p.pvpH}`)}
     ${kv("Sovereignty", sov ? sov.alliance ? esc(STN.get(sov.alliance) || "alliance " + sov.alliance) : "unclaimed" : p.s.band === "null" ? (SOV.by ? "NPC / faction" : "…") : "empire", sov && sov.mil != null ? `military level ${sov.mil}/5 · ADM ${sov.adm}` : "")}
     ${kv("Incursion", p.inc ? `yes (${esc(p.inc.state)})` : INC.by ? "none" : "…", p.inc ? (p.inc.hq ? "staging system" : "infested system") : "")}
+    ${(() => { const b = blopsNear(p.s); if (b && b.top) loadStationNames([Math.abs(b.top)]); return kv("Black Ops within 8 ly", b ? num(b.n) : (BLO.busy ? "…" : "—"), b ? `${b.rat} ratting ship${b.rat === 1 ? "" : "s"} killed${b.nearest ? ` · nearest ${esc(b.nearest.s.n)} ${b.nearest.ly.toFixed(1)} ly` : ""}${b.top ? ` · mostly ${esc(STN.get(Math.abs(b.top)) || "group " + Math.abs(b.top))}` : ""}` : "recent kills, zKillboard"); })()}
     ${kv("From " + esc(M.home), p.d + " jumps", "")}${(() => { const lm = lastMod(p.s.id); return lm ? kv("Your last modifier here", pctMod(lm.p.mod), `${when(lm.p.t)} EVE · ${lm.all.length} payout${lm.all.length === 1 ? "" : "s"} on record`) : ""; })()}</div>
   <div class="note">Newest ESI hour: ${liveWin()}. ESI counts kills in fixed hours and updates once an hour, so kills you just made appear after the next update.</div>`;
 }
@@ -2309,6 +2316,8 @@ function ratInfoBlock(p) {
 const SSO_CLIENT_ID = "1f703887a83c43e2921f779f14fbc3a1";   // public app id from developers.eveonline.com (never the secret)
 const SSO = { auth: "https://login.eveonline.com/v2/oauth/authorize", token: "https://login.eveonline.com/v2/oauth/token",
               revoke: "https://login.eveonline.com/v2/oauth/revoke", scope: "esi-wallet.read_character_wallet.v1 esi-skills.read_skills.v1" };
+// Asked for only when you press "Allow contacts" (read: so existing contacts are never touched; write: to add new ones).
+const CONTACT_SCOPES = "esi-characters.read_contacts.v1 esi-characters.write_contacts.v1";
 const BT = new Map(BOUNTY ? BOUNTY.types.map(([id, n, g, v]) => [id, { n, g, v }]) : []);   // type id -> {name, group, base}
 const BG = BOUNTY ? BOUNTY.groups : [];                                                      // [group name, faction, class, where]
 const ratName = id => BT.has(id) ? BT.get(id).n : `NPC type ${id}`;
@@ -2318,14 +2327,15 @@ const redirectUri = () => location.origin + location.pathname;   // must match t
 const b64url = bytes => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const loadSso = () => store.get("ledger.sso");
 const KT = { busy: false, err: null, note: null, sel: null };
-async function startLogin() {
+async function startLogin(withContacts) {
+  if (withContacts) store.set("ledger.ssoContacts", true);           // keep asking for them on later logins once allowed
   if (!window.isSecureContext || !crypto.subtle) { KT.err = "Logging in needs the website (https), not a file opened from disk."; renderKills(); return; }
   const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
   const challenge = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
   const state = b64url(crypto.getRandomValues(new Uint8Array(16)));
   try { sessionStorage.setItem("ledger.pkce", JSON.stringify({ verifier, state })); } catch {}
   location.href = SSO.auth + "?" + new URLSearchParams({ response_type: "code", client_id: SSO_CLIENT_ID, redirect_uri: redirectUri(),
-    scope: SSO.scope, state, code_challenge: challenge, code_challenge_method: "S256" });
+    scope: store.get("ledger.ssoContacts") ? SSO.scope + " " + CONTACT_SCOPES : SSO.scope, state, code_challenge: challenge, code_challenge_method: "S256" });
 }
 // The JWT's middle part is plain JSON (base64url). We check issuer, audience and expiry; the token came straight from CCP.
 function readJwt(tok) {
@@ -2624,6 +2634,257 @@ function skillName(id) {
   return SKNAME.get(id);
 }
 
+// ----- hunter contacts: add pilots, corporations and alliances to your EVE contacts at a chosen standing -----
+// ESI POST /characters/{id}/contacts/?standing=-10 adds up to 100 new contacts at once. Your existing contacts are read
+// first (GET, esi-characters.read_contacts.v1) and never changed. Nothing is written until you press the button and confirm.
+// [id, name, category, suggested standing, why] — from zKillboard, 14 Nov 2026 (see the Where to rat research)
+const HUNTER_LIST = [[2117862707, "Kuchikami Iriya", "character", -10, "Panther that killed your Caracal in Bosena"], [2118197109, "Onna-musha", "character", -10, "Proteus tackler on your Caracal kill"], [98815558, "Neo-Yakuza Ascendancy", "corporation", -10, "Kuchikami Iriya's corporation"], [98818398, "Neo-Yakuza Industry", "corporation", -10, "Onna-musha's corporation"], [99010457, "Parallaxis Alliance", "alliance", -10, "Neo-Yakuza's alliance; hunts Molden Heath and Great Wildlands"], [2115652382, "Zhao-Jian-Guo", "character", -10, "38 Black Ops kills near 0T-AMZ, XYY-IA (Tu Zi Fei Corporation / Dracarys.)"], [99009163, "Dracarys.", "alliance", -10, "Zhao-Jian-Guo's alliance"], [94129786, "Crimson Draufgange", "character", -10, "8 Black Ops kills near 0T-AMZ, XYY-IA (The Seven Shadows / Scotch And Tea.)"], [1566303696, "Jerbathor", "character", -10, "7 Black Ops kills near 0T-AMZ, XYY-IA (The Seven Shadows / Scotch And Tea.)"], [147074120, "Karash Amerius", "character", -10, "7 Black Ops kills near 0T-AMZ, XYY-IA (The Seven Shadows / Scotch And Tea.)"], [145536783, "Vorn", "character", -10, "29 Black Ops kills near Mai (I'm Super Bad At This / Desolate.)"], [90360702, "Ethien Green", "character", -10, "27 Black Ops kills near Mai (Anoikis Equilibrium / Honorable Third Party)"], [2124069854, "W4nz33", "character", -10, "27 Black Ops kills near Mai (Absolute Order XXV / Curatores Veritatis Alliance)"], [720593248, "Arthur McFredric", "character", -10, "21 Black Ops kills near Mai (Polaris Project / Curatores Veritatis Alliance)"], [2121089351, "Darwinn79", "character", -10, "17 Black Ops kills near Mai (Gjallarhorn Incorporated / PURPLE HELMETED WARRIORS)"], [1535008706, "Sgt Scorges", "character", -10, "15 Black Ops kills near Mai (Shi no Kage / The Tormented.)"], [2115097923, "Rofl- Chopper", "character", -10, "14 Black Ops kills near Mai (Seventeenth Battalion / Honorable Third Party)"], [93030218, "Ares Tzestu", "character", -10, "14 Black Ops kills near Mai (Polaris Project / Curatores Veritatis Alliance)"], [676001890, "Rianharte", "character", -10, "10 Black Ops kills near Mai (The Legion of Spoon / Curatores Veritatis Alliance)"], [251263666, "B'ero", "character", -10, "8 Black Ops kills near Mai (The Legion of Spoon / Curatores Veritatis Alliance)"], [91614062, "Fizya Yatolila", "character", -10, "8 Black Ops kills near Mai (bota tudo / Honorable Third Party)"], [92943546, "Rinzler90", "character", -10, "8 Black Ops kills near Mai (Anoikis Equilibrium / Honorable Third Party)"], [1197948934, "Alstarz01", "character", -10, "8 Black Ops kills near Mai (Shi no Kage / The Tormented.)"], [823761582, "Cegrocks", "character", -10, "8 Black Ops kills near Mai (Shi no Kage / The Tormented.)"], [95554144, "The Cloned One", "character", -10, "7 Black Ops kills near Mai (Anoikis Equilibrium / Honorable Third Party)"], [91135186, "grassy 420", "character", -10, "7 Black Ops kills near Mai (Anoikis Equilibrium / Honorable Third Party)"], [96661863, "Dante Fasttackle", "character", -10, "6 Black Ops kills near Mai (Nash Equilibrium Fair Industrial Enterprise / Domain Research and Mining Inst.)"], [2123341113, "Northern N", "character", -10, "6 Black Ops kills near Mai (Outlaw By Association / Domain Research and Mining Inst. Logistics)"], [2118889780, "Nao San", "character", -10, "6 Black Ops kills near Mai (Nash Equilibrium Fair Industrial Enterprise / Domain Research and Mining Inst.)"], [97121176, "AndrewF31 BARBU", "character", -10, "6 Black Ops kills near Mai (Anoikis Equilibrium / Honorable Third Party)"], [2123854321, "seedsSUS", "character", -10, "6 Black Ops kills near Mai (Armilies Corporation / Domain Research and Mining Inst.)"], [2117339892, "Louh Jaynara", "character", -10, "6 Black Ops kills near Mai (Armilies Corporation / Domain Research and Mining Inst.)"], [93697861, "Craighorn Cesaille", "character", -10, "6 Black Ops kills near Mai (Ember Inc. / Curatores Veritatis Alliance)"], [641889194, "Mad Bum2", "character", -10, "6 Black Ops kills near Mai (The Silver Wing / The Curatores Veritatis Auxiliary)"], [2113506090, "Khris Soto", "character", -10, "5 Black Ops kills near Mai (Discharged Kinetics / Honorable Third Party)"], [2118264929, "cyberBORZ", "character", -10, "5 Black Ops kills near Mai (Vita Brevis Verum Lux Magna / C A M E L O T)"], [1574777772, "LlNDSAY LOHAN", "character", -10, "5 Black Ops kills near Mai (Voidlings / V0IDLINGS)"], [92975654, "Jessica Harashi", "character", -10, "5 Black Ops kills near Mai (Pulling The Plug / PURPLE HELMETED WARRIORS)"], [99012464, "C A M E L O T", "alliance", -5, "group fighting near Mai (1 of its pilots flew Black Ops there); at war, not a ratter hunter"], [1988009451, "Curatores Veritatis Alliance", "alliance", -5, "group fighting near Mai (6 of its pilots flew Black Ops there); at war, not a ratter hunter"], [99012239, "Desolate.", "alliance", -5, "group fighting near Mai (1 of its pilots flew Black Ops there); at war, not a ratter hunter"], [99005178, "Domain Research and Mining Inst.", "alliance", -5, "group fighting near Mai (4 of its pilots flew Black Ops there); at war, not a ratter hunter"], [99009824, "Domain Research and Mining Inst. Logistics", "alliance", -5, "group fighting near Mai (1 of its pilots flew Black Ops there); at war, not a ratter hunter"], [99004567, "Honorable Third Party", "alliance", -5, "group fighting near Mai (8 of its pilots flew Black Ops there); at war, not a ratter hunter"], [173714703, "PURPLE HELMETED WARRIORS", "alliance", -5, "group fighting near Mai (2 of its pilots flew Black Ops there); at war, not a ratter hunter"], [99010240, "The Curatores Veritatis Auxiliary", "alliance", -5, "group fighting near Mai (1 of its pilots flew Black Ops there); at war, not a ratter hunter"], [99004537, "The Tormented.", "alliance", -5, "group fighting near Mai (3 of its pilots flew Black Ops there); at war, not a ratter hunter"], [99013513, "V0IDLINGS", "alliance", -5, "group fighting near Mai (1 of its pilots flew Black Ops there); at war, not a ratter hunter"]];
+const hasContactScope = s => !!s && CONTACT_SCOPES.split(" ").every(x => (s.scopes || []).includes(x));
+// The list builds itself from live data and keeps growing in this browser (owner's rule, 14 Nov 2026):
+//   red (-10): pilots seen flying Black Ops, cloaky tackle on Black Ops drops, gankers, Black Ops groups that mostly
+//              kill ratting ships, corps with 3+ ganks, and the owner's pinned hunters;
+//   orange (-5): Black Ops groups that mostly fight other groups (wars) and the top faction warfare corporations.
+// Red always wins over orange. Entries keep their "last seen" time; the button only sends new or changed ones.
+const TACKLE_IDS = new Set([11377, 12032, 12034, 12038, 11957, 11959, 11961, 11963, 11965, 11969, 11971, 20125, 29984, 29986, 29988, 29990]); // bombers, recons, T3Cs (checked against ESI)
+const HL = (() => { const c = store.get("ledger.hunters"); return c && c.e ? c : { e: {}, t: 0 }; })();   // id -> {n, cat, st, why, first, last, pushed, src, skip}
+const saveHunters = () => store.set("ledger.hunters", HL);
+const HC = { busy: false, msg: null, err: null, q: "", show: 100, red: true, orange: true, days: 30 };
+function upsert(id, cat, st, why, src, t) {
+  if (!id) return;
+  let e = HL.e[id];
+  if (!e) e = HL.e[id] = { n: "", cat, st, why, first: t, last: t, pushed: null, src };
+  e.last = Math.max(e.last || 0, t);
+  if (e.src === "pin" || e.src === "you") return;              // your own entries are never overwritten
+  if (st <= e.st) { e.st = st; e.why = why; e.src = src; e.cat = cat; }   // red beats orange
+}
+function rebuildHunters() {
+  const now = Date.now();
+  for (const [id, n, cat, st, why] of HUNTER_LIST) {
+    const e = HL.e[id] || (HL.e[id] = { first: now, pushed: null });
+    if (e.src === "you") { e.last = now; continue; }               // you changed this one yourself: leave it
+    Object.assign(e, { n, cat, st, why, src: "pin", last: Math.max(e.last || 0, now) });
+  }
+  if (BLO.list) {
+    const pilot = new Map(), tackle = new Map(), grp = new Map();
+    for (const [, t, , rat, , bl = [], tk = []] of BLO.list) {
+      for (const [c, co, al] of bl) {
+        const p = pilot.get(c) || { n: 0, rat: 0, last: 0 }; p.n++; p.rat += rat; p.last = Math.max(p.last, t); pilot.set(c, p);
+        const gk = al || (co >= 2000000 ? co : 0);                  // skip NPC corps: their members aren't one group
+        if (gk) { const g = grp.get(gk) || { n: 0, rat: 0, last: 0, cat: al ? "alliance" : "corporation" }; g.n++; g.rat += rat; g.last = Math.max(g.last, t); grp.set(gk, g); }
+      }
+      for (const [c] of tk) { const p = tackle.get(c) || { n: 0, last: 0 }; p.n++; p.last = Math.max(p.last, t); tackle.set(c, p); }
+    }
+    for (const [c, p] of pilot) upsert(c, "character", -10, `flew Black Ops on ${p.n} kill${p.n > 1 ? "s" : ""}${p.rat ? ` (${p.rat} ratting ship${p.rat > 1 ? "s" : ""})` : ""}`, "blops", p.last);
+    for (const [c, p] of tackle) if (!pilot.has(c)) upsert(c, "character", -10, `cloaky tackle on ${p.n} Black Ops drop${p.n > 1 ? "s" : ""}`, "tackle", p.last);
+    for (const [g, x] of grp) if (x.n >= 3) {
+      const hunts = x.rat / x.n >= 0.25;
+      upsert(g, x.cat, hunts ? -10 : -5, hunts ? `Black Ops group hunting ratters: ${x.rat} of ${x.n} kills were ratting ships` : `Black Ops group mostly fighting other groups (war): ${x.n} kills, ${x.rat} ratting ships`, hunts ? "blops" : "war", x.last);
+    }
+  }
+  if (GANK.list) {
+    const ch = new Map(), co = new Map();
+    for (const [, t, , att] of GANK.list) for (const [c, cp] of att || []) {
+      const p = ch.get(c) || { n: 0, last: 0 }; p.n++; p.last = Math.max(p.last, t); ch.set(c, p);
+      if (cp && cp > 2000000) { const q = co.get(cp) || { n: 0, last: 0 }; q.n++; q.last = Math.max(q.last, t); co.set(cp, q); }   // skip NPC starter corps (ids under 2,000,000)
+    }
+    for (const [c, p] of ch) upsert(c, "character", -10, `ganker: on ${p.n} highsec gank${p.n > 1 ? "s" : ""} (zKillboard, last 72 h)`, "gank", p.last);
+    for (const [c, p] of co) if (p.n >= 3) upsert(c, "corporation", -10, `ganking corporation: ${p.n} ganks in 72 h`, "gank", p.last);
+  }
+  if (FW.list) for (const [id, week, all] of FW.list) upsert(id, "corporation", -5, `faction warfare: top corporation by kills (${num(week || 0)} last week, ${num(all || 0)} all time; ESI leaderboard)`, "fw", FW.t);
+  HL.t = now; saveHunters(); resolveHunterNames();
+}
+// Faction warfare: ESI's public leaderboard (top corporations by kills, last week and all time).
+const FW = { list: null, t: 0, busy: false };
+{ const c = store.get("ledger.fw"); if (c && c.list && c.list[0] && c.list[0].length === 3 && Date.now() - c.t < 6 * 3600e3) Object.assign(FW, c); }
+async function loadFw() {
+  if (FW.busy || (FW.list && Date.now() - FW.t < 6 * 3600e3)) return;
+  FW.busy = true;
+  try {
+    const j = await (await fetch(ESI + "/fw/leaderboards/corporations/")).json(), m = new Map();
+    for (const x of j.kills.last_week || []) m.set(x.corporation_id, { week: x.amount, all: 0 });
+    for (const x of j.kills.active_total || []) m.set(x.corporation_id, Object.assign(m.get(x.corporation_id) || { week: 0 }, { all: x.amount }));
+    Object.assign(FW, { list: [...m].map(([id, k]) => [id, k.week, k.all]), t: Date.now() }); store.set("ledger.fw", { list: FW.list, t: FW.t });
+  } catch (e) { console.error("[ledger] fw", e); }
+  FW.busy = false; rebuildHunters(); renderKills();
+}
+let namesBusy = false;
+async function resolveHunterNames() {
+  const need = Object.keys(HL.e).filter(id => !HL.e[id].n).map(Number);
+  if (!need.length || namesBusy) return;
+  namesBusy = true;
+  try {
+    // ESI refuses a whole batch if one id no longer exists (e.g. a deleted character): split it until the bad ids are alone.
+    const lookup = async ids => {
+      const r = await fetch(ESI + "/universe/names/", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ids) });
+      if (r.ok) { for (const x of await r.json()) if (HL.e[x.id]) { HL.e[x.id].n = x.name; HL.e[x.id].cat = x.category; } return; }
+      if (r.status !== 404) throw new Error("ESI names replied " + r.status);
+      if (ids.length === 1) { delete HL.e[ids[0]]; return; }                 // gone from the game: drop it
+      const half = Math.ceil(ids.length / 2);
+      await lookup(ids.slice(0, half)); await lookup(ids.slice(half));
+    };
+    for (let i = 0; i < need.length; i += 1000) await lookup(need.slice(i, i + 1000));
+    saveHunters();
+  } catch (e) { console.error("[ledger] hunter names", e); }
+  namesBusy = false; renderKills();
+}
+async function addByNames(text) {
+  const names = [...new Set(text.split(/\r?\n/).map(x => x.trim()).filter(Boolean))].slice(0, 100);
+  if (!names.length) return;
+  const r = await fetch(ESI + "/universe/ids/", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(names) });
+  if (!r.ok) { HC.err = "ESI name lookup replied " + r.status; return renderKills(); }
+  const j = await r.json(), found = [];
+  for (const [cat, key] of [["character", "characters"], ["corporation", "corporations"], ["alliance", "alliances"]])
+    for (const x of j[key] || []) { HL.e[x.id] = Object.assign(HL.e[x.id] || { first: Date.now(), pushed: null }, { n: x.name, cat, st: -10, why: "added by you", src: "you", last: Date.now() }); found.push(x.name.toLowerCase()); }
+  const missing = names.filter(n => !found.includes(n.toLowerCase()));
+  saveHunters();
+  HC.msg = `Added ${found.length} to the list.${missing.length ? " Not found as a pilot, corporation or alliance: " + missing.join(", ") : ""}`; HC.err = null;
+  renderKills();
+}
+// Entries the button would send: in the chosen colours, seen recently, not switched off, and new or changed.
+function huntersToSend() {
+  const cut = Date.now() - HC.days * 86400e3;
+  const rank = { alliance: 0, corporation: 1, character: 2 };
+  return Object.entries(HL.e).filter(([, e]) => !e.skip && e.n && ((e.st <= -10 && HC.red) || (e.st > -10 && HC.orange)) && (e.src === "pin" || e.src === "you" || e.last >= cut) && e.pushed !== e.st)
+    .sort((a, b) => (a[1].src === "pin" ? -1 : 0) - (b[1].src === "pin" ? -1 : 0) || rank[a[1].cat] - rank[b[1].cat] || b[1].last - a[1].last);   // pins, then groups, then newest pilots
+}
+async function writeContacts() {
+  const s = loadSso(); if (!s || !hasContactScope(s) || HC.busy) return;
+  HC.busy = true; HC.err = null; HC.msg = null; renderKills();
+  try {
+    // 1. Every contact you already have, from EVE (all pages). These are never changed.
+    const existing = new Set();
+    for (let page = 1, pages = 1; page <= pages; page++) {
+      const r = await fetch(`${ESI}/characters/${s.charId}/contacts/?page=${page}`, { headers: { Authorization: "Bearer " + await accessToken() } });
+      if (!r.ok) throw new Error("Couldn't read your existing contacts (ESI " + r.status + "), so nothing was sent");
+      pages = Math.min(+r.headers.get("x-pages") || 1, 50);
+      for (const c of await r.json()) existing.add(c.contact_id);
+    }
+    for (const [id, e] of Object.entries(HL.e)) e.inGame = existing.has(+id);
+    const pick = huntersToSend().filter(([id]) => !existing.has(+id));
+    const kept = huntersToSend().length - pick.length;
+    if (!pick.length) { HC.msg = `Nothing new to add. ${kept ? `${kept} on the list are already in your contacts and were left exactly as you set them.` : ""}`; HC.busy = false; saveHunters(); return renderKills(); }
+    const red = pick.filter(([, e]) => e.st <= -10).length;
+    if (!confirm(`Add ${pick.length} NEW contacts to ${s.name}?\n${red} at -10 (dark red), ${pick.length - red} at -5 (orange).\n${kept} already in your contacts will be left exactly as they are.`)) { HC.busy = false; saveHunters(); return renderKills(); }
+    // 2. Add only the new ones, up to 100 per request, grouped by standing. No update step: existing contacts stay yours.
+    const groups = new Map();
+    for (const [id, e] of pick) { if (!groups.has(e.st)) groups.set(e.st, []); groups.get(e.st).push(+id); }
+    let added = 0, refused = 0;
+    for (const [st, ids] of groups) for (let i = 0; i < ids.length; i += 100) {
+      const chunk = ids.slice(i, i + 100);
+      const r = await fetch(`${ESI}/characters/${s.charId}/contacts/?standing=${st}&watched=false`, { method: "POST", headers: { Authorization: "Bearer " + await accessToken(), "Content-Type": "application/json" }, body: JSON.stringify(chunk) });
+      if (!r.ok) throw new Error(`ESI contacts replied ${r.status} after ${added} were added` + (r.status === 520 || r.status === 400 ? " (EVE may have hit its contacts limit: send red only, or narrow \"Seen in the last\")" : ""));
+      const got = await r.json().catch(() => []), ok = new Set(Array.isArray(got) ? got : []);
+      for (const id of chunk) { if (ok.has(id)) { HL.e[id].pushed = st; HL.e[id].inGame = true; added++; } else refused++; }
+      saveHunters();
+    }
+    HC.msg = `Done: ${added} new contacts added.${kept ? ` ${kept} were already in your contacts and were left as you set them.` : ""}${refused ? ` ${refused} weren't accepted by EVE.` : ""} They show in game under Contacts (People & Places).`;
+  } catch (e) { HC.err = e.message; console.error("[ledger] contacts", e); }
+  HC.busy = false; saveHunters(); renderKills();
+}
+const SRC_NAME = { pin: "your pinned hunters", you: "added by you", blops: "Black Ops", tackle: "cloaky tackle", gank: "gankers", war: "war groups", fw: "faction warfare" };
+function contactsBlock() {
+  const s = loadSso(), all = Object.entries(HL.e).filter(([, e]) => e.n);
+  const bySrc = {}; for (const [, e] of all) bySrc[e.src] = (bySrc[e.src] || 0) + 1;
+  const red = all.filter(([, e]) => e.st <= -10).length, send = huntersToSend();
+  let h = `<div style="display:grid;gap:8px"><span class="lbl">Hunter contacts · builds itself, keeps growing</span>
+    <div class="note">${num(all.length)} on the list: ${red} red, ${all.length - red} orange. ${Object.entries(bySrc).map(([k, n]) => `${SRC_NAME[k] || k} ${n}`).join(" · ")}. Updated ${HL.t ? when(HL.t) + " EVE" : "…"} from recent Black Ops kills, ganks and the faction warfare leaderboard; it refreshes while this tab is open.</div>`;
+  if (!s) h += `<div class="note">Log in to send the list to your EVE contacts.</div>`;
+  else if (!hasContactScope(s)) h += `<div class="note" style="color:var(--warn)">Adding contacts needs one more permission. <button class="btn" type="button" data-kt="loginContacts">Allow contacts (log in again)</button> Your app at developers.eveonline.com must list <code>esi-characters.read_contacts.v1</code> and <code>esi-characters.write_contacts.v1</code>.</div>`;
+  if (HC.err) h += `<div class="note" style="color:var(--bad)">${esc(HC.err)}</div>`;
+  if (HC.msg) h += `<div class="note">${esc(HC.msg)}</div>`;
+  const q = HC.q.trim().toLowerCase();
+  const rows = all.filter(([, e]) => !q || e.n.toLowerCase().includes(q) || (e.why || "").toLowerCase().includes(q))
+    .sort((a, b) => a[1].st - b[1].st || b[1].last - a[1].last);
+  h += `<div class="mbar"><div class="ctl"><label for="hcQ">Search</label><input type="search" id="hcQ" value="${esc(HC.q)}" placeholder="Name or reason" maxlength="40"></div>
+      <label class="chk"><input type="checkbox" data-hc="red"${HC.red ? " checked" : ""}> Red</label><label class="chk"><input type="checkbox" data-hc="orange"${HC.orange ? " checked" : ""}> Orange</label>
+      <div class="ctl"><label for="hcDays">Seen in the last</label><select id="hcDays" data-hc="days">${[7, 30, 90, 3650].map(d => `<option value="${d}"${HC.days === d ? " selected" : ""}>${d > 365 ? "any time" : d + " days"}</option>`).join("")}</select></div></div>
+    <div class="scroll"><table class="reftab"><thead><tr><th>Send</th><th>Name</th><th>Type</th><th>Standing</th><th>Why</th><th>Last seen</th><th>In game</th></tr></thead><tbody>${rows.slice(0, HC.show).map(([id, e]) =>
+      `<tr><td><input type="checkbox" data-hc="skip" data-id="${id}"${e.skip ? "" : " checked"} aria-label="Send ${esc(e.n)}"></td><td><a href="https://zkillboard.com/${e.cat}/${id}/" target="_blank" rel="noopener">${esc(e.n)}</a></td><td>${e.cat}</td>
+        <td><select data-hc="st" data-id="${id}" aria-label="Standing for ${esc(e.n)}"><option value="-10"${e.st <= -10 ? " selected" : ""}>-10 red</option><option value="-5"${e.st > -10 ? " selected" : ""}>-5 orange</option></select></td>
+        <td style="font-family:var(--f-body);white-space:normal;min-width:240px">${esc(e.why || "")}</td><td>${e.src === "pin" || e.src === "you" ? "pinned" : ago(e.last)}</td><td>${e.inGame && e.pushed == null ? "yours, kept" : e.pushed == null ? "—" : e.pushed === e.st ? "added" : "changed"}</td></tr>`).join("")}</tbody></table></div>
+    ${rows.length > HC.show ? `<button class="btn" type="button" data-kt="hcMore" style="justify-self:start">Show ${Math.min(200, rows.length - HC.show)} more of ${num(rows.length)}</button>` : ""}
+    <div class="mbar"><div class="ctl" style="flex:1 1 260px"><label for="hcNames">Pin more by name (one per line, always red)</label><textarea id="hcNames" rows="2" style="width:100%"></textarea></div>
+      <button class="btn" type="button" data-kt="hcAdd">Pin to the list</button>
+      <button class="btn primary" type="button" data-kt="hcWrite"${!s || !hasContactScope(s) || HC.busy || !send.length ? " disabled" : ""}>${HC.busy ? "Sending…" : `Send ${send.length} new or changed to my contacts`}</button></div>
+    <div class="note">Red: hunters, Black Ops pilots, cloaky tackle on Black Ops drops and gankers. Orange: groups at war and faction warfare corporations. Corporations and alliances colour every member. EVE limits how many contacts a character can have (I couldn't confirm the exact number); if the game refuses, send red only or narrow "Seen in the last". Contacts you already have in game are never changed: the page reads them first and skips them. Nothing is written until you press the button and confirm.</div></div>`;
+  return h;
+}
+
+// ----- Black Ops activity: recent kills with a Black Ops battleship on the attacking side (zKillboard) -----
+// Black Ops jump to covert cynos up to about 8 light years away, so what matters is activity within 8 ly.
+const BLOPS_HULLS = [22428, 22430, 22436, 22440, 44996];       // Redeemer, Sin, Widow, Panther, Marshal
+const RATTER_IDS = new Set([621, 626, 638, 643, 644, 645, 3756, 11993, 12005, 16227, 16233, 17634, 17636, 17715, 17726, 17736, 17738, 17843, 17918,
+  22470, 24698, 24700, 28659, 28661, 28665, 28710, 29984, 33153, 33470, 33818, 33820, 47466]);   // common ratting hulls, checked against ESI
+const BLO = { list: null, t: 0, busy: false, err: null };
+{ const c = store.get("ledger.blops"); if (c && Array.isArray(c.list) && Date.now() - c.t < 3600e3 && (!c.list.length || Array.isArray(c.list[0][5]))) Object.assign(BLO, { list: c.list, t: c.t }); }
+const LY_UNITS = 9.4607;                                       // the bundle's map positions are in units of 1e15 m
+let BSYS = null, BMEMO = new Map();
+function loadBlops() {
+  if (BLO.busy || (BLO.list && Date.now() - BLO.t < 3600e3)) return;
+  BLO.busy = true;
+  zkChain = zkChain.then(async () => {
+    const out = [], seen = new Set();
+    try {
+      for (const hull of BLOPS_HULLS) for (let page = 1; page <= 2; page++) {
+        const list = await zkGet(`https://zkillboard.com/api/kills/shipTypeID/${hull}/page/${page}/`);
+        for (const k of list) {
+          if (seen.has(k.killmail_id)) continue; seen.add(k.killmail_id);
+          const pl = k.attackers.filter(a => a.character_id), b = pl.find(a => BLOPS_HULLS.includes(a.ship_type_id));
+          // [system id, time, players on the kill, ratting hull killed (1/0), Black Ops pilot's alliance (or -corp)]
+          out.push([k.solar_system_id, Date.parse(k.killmail_time), pl.length, RATTER_IDS.has(k.victim.ship_type_id) ? 1 : 0, b ? (b.alliance_id || -(b.corporation_id || 0)) : 0,
+            pl.filter(a => BLOPS_HULLS.includes(a.ship_type_id)).map(a => [a.character_id, a.corporation_id || 0, a.alliance_id || 0]),   // Black Ops pilots
+            pl.filter(a => TACKLE_IDS.has(a.ship_type_id)).map(a => [a.character_id, a.corporation_id || 0, a.alliance_id || 0])]);      // cloaky tackle
+        }
+        if (list.length < 200) break;
+      }
+      Object.assign(BLO, { list: out, t: Date.now(), err: null });
+      store.set("ledger.blops", { list: out, t: BLO.t });
+    } catch (e) { BLO.err = e.message; console.error("[ledger] black ops", e); }
+    BLO.busy = false; BSYS = null; BMEMO = new Map(); rebuildHunters();
+    if (S.tab === "rat") { renderRatOut(); renderMap("rat"); }
+    if (openSys != null) renderSysDossier();
+  });
+}
+function blopsBySystem() {
+  if (BSYS || !BLO.list) return BSYS;
+  BSYS = new Map();
+  for (const [sid, t, pl, rat, g] of BLO.list) {
+    const s = SY_ID.get(sid); if (!s) continue;
+    const e = BSYS.get(s.i) || { n: 0, rat: 0, last: 0, groups: new Map() };
+    e.n++; e.rat += rat; e.last = Math.max(e.last, t); if (g) e.groups.set(g, (e.groups.get(g) || 0) + 1);
+    BSYS.set(s.i, e);
+  }
+  return BSYS;
+}
+// Black Ops kills within 8 ly of a system (top-down map distance, so a little generous).
+function blopsNear(s) {
+  const bs = blopsBySystem(); if (!bs) return null;
+  if (BMEMO.has(s.i)) return BMEMO.get(s.i);
+  let n = 0, rat = 0, nearest = null; const groups = new Map();
+  for (const [i, e] of bs) {
+    const ly = Math.hypot(SY[i].x - s.x, SY[i].z - s.z) / LY_UNITS;
+    if (ly > 8) continue;
+    n += e.n; rat += e.rat;
+    if (!nearest || ly < nearest.ly) nearest = { s: SY[i], ly };
+    for (const [g, c] of e.groups) groups.set(g, (groups.get(g) || 0) + c);
+  }
+  const top = [...groups].sort((a, b) => b[1] - a[1])[0];
+  const r = { n, rat, nearest, top: top ? top[0] : 0 };
+  BMEMO.set(s.i, r); return r;
+}
+function blopsLayer() {
+  const bs = blopsBySystem(), by = new Map();
+  if (bs) for (const [i, e] of bs) by.set(SY[i].id, { n: e.n, fresh: Date.now() - e.last < 24 * 3600e3, r: 2 + 1.4 * Math.sqrt(e.n),
+    title: `${e.n} Black Ops kill${e.n === 1 ? "" : "s"}, ${e.rat} ratting ship${e.rat === 1 ? "" : "s"}, latest ${ago(e.last)}` });
+  const ts = BLO.list ? BLO.list.map(x => x[1]) : [], from = ts.length ? Math.min(...ts) : 0;
+  return { ready: !!BLO.list, err: BLO.err, retry: "data-bretry", key: "blops|" + BLO.t + "|" + !!BLO.err, by, cls: "gk",
+    sum: BLO.list ? `${BLO.list.length} Black Ops kills in ${by.size} systems since ${when(from)} EVE` : BLO.busy ? "loading…" : BLO.err ? "couldn't load" : "loading…",
+    loading: "Loading recent Black Ops kills from zKillboard (about 10 requests, spaced out)…",
+    legend: `<span><i style="background:var(--bad);border-radius:50%"></i>Black Ops kills (bigger = more, solid = within 24 h)</span>`,
+    hottest: "Most Black Ops kills here", empty: "No Black Ops kills in this area in the window.",
+    note: `Kills where a Black Ops battleship (Redeemer, Sin, Widow, Panther, Marshal) was on the attacking side: zKillboard's newest pages for each hull, so about the last week or two. Black Ops jump to covert cynos up to about 8 light years away, so a quiet system next to a hot one is still in range. Click any system to open it.` };
+}
+
 // ----- the tab -----
 let ktFaction = "Angel Cartel", ktQuery = "";
 function renderKills() {
@@ -2633,7 +2894,7 @@ function renderKills() {
   if (KT.err) h += `<div class="note" style="color:var(--bad)">${esc(KT.err)}</div>`;
   if (KT.note) h += `<div class="note">${esc(KT.note)}</div>`;
   if (!s) {
-    h += `<div class="rec"><span class="lbl">Not logged in</span><div>Read-only access to two things: your wallet journal (<code>esi-wallet.read_character_wallet.v1</code>) and your skills (<code>esi-skills.read_skills.v1</code>). The page can't move ISK or change anything in game.</div>
+    h += `<div class="rec"><span class="lbl">Not logged in</span><div>Read-only access to two things: your wallet journal (<code>esi-wallet.read_character_wallet.v1</code>) and your skills (<code>esi-skills.read_skills.v1</code>). Contact permissions are only asked for if you press "Allow contacts" in Hunter contacts. The page can't move ISK.</div>
       <div><button class="btn primary" type="button" data-kt="login">Log in with EVE Online</button></div></div>`;
   } else {
     h += `<div class="rec"><div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><img src="https://images.evetech.net/characters/${s.charId}/portrait?size=64" width="48" height="48" alt="" style="border-radius:4px">
@@ -2643,6 +2904,7 @@ function renderKills() {
   }
   if (s) h += ktViews(s.charId);
   h += fitBlock();
+  if (s) h += contactsBlock();
   h += bountyRef();
   if (s && hasSkillScope(s) && !SKL.by && !SKL.busy && !SKL.err) loadSkills();
   main.innerHTML = h + `</section>`;
@@ -2718,11 +2980,15 @@ function wireKills() {
     const b = e.target.closest("[data-kt]"); if (!b || S.tab !== "kills") return;
     const act = b.dataset.kt;
     if (act === "login") startLogin();
+    else if (act === "loginContacts") startLogin(true);
     else if (act === "sync") syncJournal(true);
     else if (act === "logout") logout();
     else if (act === "csv") exportCsv();
     else if (act === "fit") { const ta = $("fitIn"); if (ta) { FIT.text = ta.value; store.set("ledger.fit", FIT.text); } checkFit(); }
     else if (act === "skills") loadSkills(true);
+    else if (act === "hcAdd") { const ta = $("hcNames"); if (ta) addByNames(ta.value); }
+    else if (act === "hcMore") { HC.show += 200; renderKills(); }
+    else if (act === "hcWrite") writeContacts();
     else if (act === "wipe") {
       const s = loadSso(); if (!s) return;
       if (confirm(`Delete the saved kill history for ${s.name} from this browser? Payouts from the last 30 days can be read again with Sync now; older ones are gone for good.`)) {
@@ -2735,7 +3001,16 @@ function wireKills() {
     if (S.tab !== "kills") return;
     if (e.target.id === "ktSys") { KT.sel = +e.target.value; renderKills(); }
     if (e.target.id === "ktFac") { ktFaction = e.target.value; renderKills(); }
+    const hc = e.target.dataset && e.target.dataset.hc;
+    if (hc) {
+      const e2 = e.target.dataset.id ? HL.e[e.target.dataset.id] : null;
+      if (hc === "skip" && e2) e2.skip = !e.target.checked;
+      else if (hc === "st" && e2) { e2.st = +e.target.value; e2.src = "you"; e2.why = (e2.why || "") + " (standing set by you)"; }
+      else if (hc === "red") HC.red = e.target.checked; else if (hc === "orange") HC.orange = e.target.checked; else if (hc === "days") HC.days = +e.target.value;
+      saveHunters(); renderKills();
+    }
   });
+  main.addEventListener("input", e => { if (S.tab === "kills" && e.target.id === "hcQ") { HC.q = e.target.value; const pos = e.target.selectionStart; renderKills(); const q = $("hcQ"); if (q) { q.focus(); q.setSelectionRange(pos, pos); } } });
   main.addEventListener("input", e => { if (S.tab === "kills" && e.target.id === "fitIn") { FIT.text = e.target.value; store.set("ledger.fit", FIT.text); return; } });
   main.addEventListener("input", e => { if (S.tab === "kills" && e.target.id === "ktQ") { ktQuery = e.target.value; const pos = e.target.selectionStart; renderKills(); const q = $("ktQ"); if (q) { q.value = ktQuery; q.focus(); q.setSelectionRange(pos, pos); } } });
 }
@@ -2809,9 +3084,10 @@ function render() {
   } else if (tab.id === "kills") {
     if (main.dataset.view !== "kills") { main.dataset.view = "kills"; renderKills(); }
     if (loadSso()) syncJournal(false);
+    loadGanks(); loadBlops(); loadFw(); rebuildHunters();
   } else if (tab.id === "rat") {
     if (main.dataset.view !== "rat") { mapKeys.rat = ""; buildRatShell(main); main.dataset.view = "rat"; }
-    renderRatOut(); renderMap("rat"); loadLive(); loadK24(); loadSov(); loadInc();
+    renderRatOut(); renderMap("rat"); loadLive(); loadK24(); loadSov(); loadInc(); loadBlops();
   } else if (tab.id === "mine") {
     if (main.dataset.view !== "mine") { mapKeys.mine = ""; buildMineShell(main); main.dataset.view = "mine"; }
     renderMineOut(); renderMap(); renderRefineries(); loadLive(); loadGanks(); if (M.refP) loadPlayerRefineries();
@@ -3052,6 +3328,7 @@ function initControls() {
     if (e.target.closest("[data-rmore]")) { RPAGE += 100; renderRatOut(); return; }
     if (e.target.closest("[data-mretry]")) { LIVE.retryAt = 0; loadLive(); return; }
     if (e.target.closest("[data-gretry]")) { GANK.retryAt = 0; loadGanks(); return; }
+    if (e.target.closest("[data-bretry]")) { BLO.t = 0; BLO.err = null; loadBlops(); return; }
     const c = e.target.closest("[data-id]"); if (c && !c.classList.contains("na")) openDossier(c.dataset.id);
   });
   main.addEventListener("change", e => { if (e.target.id === "bfilter") { S.bfilter = e.target.value; save(); render(); } });
@@ -3125,7 +3402,7 @@ initControls(); wireKills(); refresh(false); render();   // refresh first: it ze
 setInterval(() => { if (!document.hidden && !busy()) refresh(false); }, 10 * 60e3);
 // Where to mine: ganks every 5 min (GANK_TTL) and ESI kills/jumps when they expire, only while that tab is on screen.
 setInterval(() => { if (S.tab === "mine" && !document.hidden) { loadGanks(); loadLive(); } }, 60e3);
-setInterval(() => { if (S.tab === "rat" && !document.hidden) { loadLive(); loadK24(); if (HOURS.list) loadHours(); loadSov(); loadInc(); } }, 60e3);   // each loader skips until its own cache time runs out
+setInterval(() => { if (S.tab === "rat" && !document.hidden) { loadLive(); loadK24(); if (HOURS.list) loadHours(); loadSov(); loadInc(); loadBlops(); } }, 60e3);   // each loader skips until its own cache time runs out
 </script>
 </body>
 </html>
