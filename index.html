@@ -1194,6 +1194,10 @@ function hpop(h) {
 }
 // Routes from any start system, cached (the last 20 starts). dist = jumps along the route, prev = the system before.
 const ROUTE_CACHE = new Map();
+// Gates that exist in the map data but EVE's own router won't use (e.g. Mehatoor -> Akes, found 14 Nov 2026); learned
+// by checking routes with ESI and remembered in this browser. Routes here skip them so they match the autopilot.
+const BLOCKED = new Set(store.get("ledger.blockedGates") || []);
+const gateKey = (a, b) => a + ">" + b;
 function routesFrom(start, mode) {
   const key = start + "|" + mode;
   if (ROUTE_CACHE.has(key)) return ROUTE_CACHE.get(key);
@@ -1203,7 +1207,7 @@ function routesFrom(start, mode) {
     const q = [start];
     for (let h = 0; h < q.length; h++) {
       const a = q[h];
-      for (const b of SY[a].nb) if (dist[b] < 0) { dist[b] = dist[a] + 1; prev[b] = a; q.push(b); }
+      for (const b of SY[a].nb) if (dist[b] < 0 && !BLOCKED.has(gateKey(a, b))) { dist[b] = dist[a] + 1; prev[b] = a; q.push(b); }
     }
   } else {
     const cost = new Float64Array(SY.length).fill(Infinity), heap = [[0, start]];
@@ -1212,6 +1216,7 @@ function routesFrom(start, mode) {
       const [c, a] = hpop(heap);
       if (c > cost[a]) continue;                    // an older, worse entry for a system we already settled
       for (const b of SY[a].nb) {
+        if (BLOCKED.has(gateKey(a, b))) continue;
         const nc = c + (SY[b].band === "high" ? 1 : 1e4);
         if (nc < cost[b]) { cost[b] = nc; dist[b] = dist[a] + 1; prev[b] = a; hpush(heap, [nc, b]); }
       }
@@ -3039,9 +3044,9 @@ function wireKills() {
 // risk per jump. "Set route in EVE" adds every system of the chosen route as an autopilot waypoint (on your click only).
 const INTEL_SCOPES = "esi-location.read_location.v1 esi-location.read_online.v1 esi-location.read_ship_type.v1 esi-ui.write_waypoint.v1";
 const hasIntelScope = s => !!s && INTEL_SCOPES.split(" ").every(x => (s.scopes || []).includes(x));
-const IN = { loc: null, ship: null, online: null, t: 0, err: null, busy: false, to: "", from: "", mode: "safe", msg: null, wpBusy: false };
-{ const c = store.get("ledger.intel"); if (c) Object.assign(IN, { to: c.to || "", from: c.from || "", mode: c.mode === "short" ? "short" : "safe" }); }
-const saveIntel = () => store.set("ledger.intel", { to: IN.to, from: IN.from, mode: IN.mode });
+const IN = { loc: null, ship: null, online: null, t: 0, err: null, busy: false, to: "", from: "", mode: "safe", msg: null, wpBusy: false, ap: "secure" };
+{ const c = store.get("ledger.intel"); if (c) Object.assign(IN, { to: c.to || "", from: c.from || "", mode: c.mode === "short" ? "short" : "safe", ap: ["shortest", "secure", "insecure"].includes(c.ap) ? c.ap : "secure" }); }
+const saveIntel = () => store.set("ledger.intel", { to: IN.to, from: IN.from, mode: IN.mode, ap: IN.ap });
 async function pollLocation() {
   const s = loadSso(); if (!s || !hasIntelScope(s) || IN.busy || document.hidden || IN.paused === s.access || Date.now() < (IN.coolUntil || 0)) return;
   IN.busy = true;
@@ -3129,27 +3134,172 @@ function routeCard() {
   const s = loadSso();
   h += `<div class="facts"><span class="pill ${cls}">${v}</span><span>${path.length - 1} jumps (${IN.mode === "safe" ? "highsec-preferred" : "shortest"}; the other way is ${other} jumps)</span><span>${unsafe} outside highsec</span><span>${bad.length} at elevated or high gank risk</span><span>${blopsHot.length} with a Black Ops kill in the system in the last 48 h</span></div>
     <div class="route">${hops.map(x => `<span class="hop" title="${esc(x.r.why || "nothing recent")}${x.bo ? ` · ${x.bo.n} Black Ops kill${x.bo.n > 1 ? "s" : ""} here, latest ${ago(x.bo.last)}` : ""}"><button type="button" class="linkb" data-sys="${x.s.i}">${esc(x.s.n)}</button> ${secTag(x.s)}${x.r.lvl ? ` ${riskPill(x.r.lvl, x.r.why)}` : ""}${x.bo ? ` <span class="pill bad" title="Black Ops kill in this system, latest ${ago(x.bo.last)}">BO</span>` : ""}</span>`).join(`<span class="muted">›</span>`)}</div>
-    <div class="mbar"><button class="btn primary" type="button" data-in="wp"${!s || !hasIntelScope(s) || IN.wpBusy ? " disabled" : ""}>${IN.wpBusy ? "Setting…" : `Set this route in EVE (${path.length - 1} waypoints)`}</button>
-      ${!s || !hasIntelScope(s) ? `<span class="note">Needs the intel permission (above).</span>` : `<span class="note">Replaces your current autopilot waypoints with every system on this route, so the autopilot can't take a different way.</span>`}</div>`;
+    <div class="mbar"><div class="ctl"><label for="inAp">Your EVE autopilot setting</label><select id="inAp">${[["shortest", "Prefer shorter"], ["secure", "Prefer safer"], ["insecure", "Prefer less secure"]].map(([v, n]) => `<option value="${v}"${IN.ap === v ? " selected" : ""}>${n}</option>`).join("")}</select></div>
+      <button class="btn primary" type="button" data-in="wp"${!s || !hasIntelScope(s) || IN.wpBusy ? " disabled" : ""}>${IN.wpBusy ? "Setting…" : "Set this route in EVE"}</button>
+      ${!s || !hasIntelScope(s) ? `<span class="note">Needs the intel permission (above).</span>` : `<span class="note">Adds only the waypoints needed to keep the autopilot on this route (it stops at each waypoint), usually just the destination. Replaces your current waypoints.</span>`}</div>`;
   if (IN.msg) h += `<div class="note">${esc(IN.msg)}</div>`;
   IN.path = path;
   return h;
 }
+// EVE's autopilot stops when it reaches a waypoint, so a waypoint on every system means a stop after every jump.
+// Instead: ask ESI's route service (same rules as the client) what the autopilot would fly from each point, and add a
+// waypoint only where it would leave the chosen route. Usually that is just the destination.
+async function apRoute(a, b) {
+  const r = await fetch(`${ESI}/route/${SY[a].id}/${SY[b].id}/?flag=${IN.ap}`);
+  noteErrBudget(r);
+  if (!r.ok) throw new Error("ESI route replied " + r.status);
+  return (await r.json()).map(id => SY_ID.get(id)?.i);
+}
+async function anchorsFor(path) {
+  const anchors = [];
+  let k = 0;                                                    // index on our path where the autopilot currently is
+  for (let guard = 0; k < path.length - 1 && guard < 40; guard++) {
+    const full = await apRoute(path[k], path[path.length - 1]);
+    let m = 0; while (m < full.length && k + m < path.length && full[m] === path[k + m]) m++;
+    if (k + m === path.length && m === full.length) { anchors.push(path[path.length - 1]); break; }   // it flies our route to the end
+    // It leaves our route after path[k + m - 1]. Find the furthest point on our route it will still reach our way.
+    let lo = k + 1, hi = path.length - 1, best = k + 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1, seg = await apRoute(path[k], path[mid]);
+      const same = seg.length === mid - k + 1 && seg.every((x, j) => x === path[k + j]);
+      if (same) { best = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    anchors.push(path[best]); k = best;
+  }
+  return anchors;
+}
+async function checkGates(path) {
+  for (let k = 0; k < path.length - 1; k++) {
+    const r = await fetch(`${ESI}/route/${SY[path[k]].id}/${SY[path[k + 1]].id}/?flag=shortest`); noteErrBudget(r);
+    if (!r.ok) throw new Error("ESI route replied " + r.status);
+    if ((await r.json()).length !== 2) {                       // the router won't take this gate
+      BLOCKED.add(gateKey(path[k], path[k + 1])); store.set("ledger.blockedGates", [...BLOCKED]);
+      ROUTE_CACHE.clear(); distHome = ""; RISKMEMO = null;
+      return `${SY[path[k]].n} > ${SY[path[k + 1]].n}`;
+    }
+  }
+  return null;
+}
 async function setWaypoints() {
   const s = loadSso(); if (!s || !hasIntelScope(s) || !IN.path || IN.wpBusy) return;
-  const hops = IN.path.slice(1);
-  if (!confirm(`Set ${hops.length} autopilot waypoints in EVE for ${s.name}?\nYour current waypoints will be cleared.`)) return;
-  IN.wpBusy = true; IN.msg = null; renderIntel();
+  IN.wpBusy = true; IN.msg = "Checking every jump with EVE's router, then working out the fewest waypoints…"; renderIntel();
   try {
-    for (let k = 0; k < hops.length; k++) {
-      const q = new URLSearchParams({ add_to_beginning: "false", clear_other_waypoints: k === 0 ? "true" : "false", destination_id: SY[hops[k]].id });
-      const r = await fetch(`${ESI}/ui/autopilot/waypoint/?${q}`, { method: "POST", headers: { Authorization: "Bearer " + await accessToken() } });
-      if (!r.ok) throw new Error(`ESI waypoint replied ${r.status} after ${k} of ${hops.length}` + (r.status === 404 ? " (are you logged in to the game?)" : ""));
+    const skipped = [];
+    for (let tries = 0; tries < 6; tries++) {                   // a refused gate changes the route: check the new one too
+      const bad = await checkGates(IN.path);
+      if (!bad) break;
+      skipped.push(bad); renderIntel();                         // recalculates IN.path without that gate
     }
-    IN.msg = `Done: ${hops.length} waypoints set. Check the route in game before you undock.`;
+    if (skipped.length) IN.msg = `The game's router won't use ${skipped.join(", ")}; the route now goes around (${IN.path.length - 1} jumps).`;
+    const anchors = await anchorsFor(IN.path);
+    if (!confirm(`Set ${anchors.length} autopilot waypoint${anchors.length > 1 ? "s" : ""} in EVE for ${s.name}?\n${anchors.map(i => SY[i].n).join(" > ")}\nYour current waypoints will be cleared. Your EVE autopilot setting must be "${{ shortest: "Prefer shorter", secure: "Prefer safer", insecure: "Prefer less secure" }[IN.ap]}" for this route to hold.`)) { IN.msg = null; IN.wpBusy = false; return renderIntel(); }
+    for (let k = 0; k < anchors.length; k++) {
+      const q = new URLSearchParams({ add_to_beginning: "false", clear_other_waypoints: k === 0 ? "true" : "false", destination_id: SY[anchors[k]].id });
+      const r = await fetch(`${ESI}/ui/autopilot/waypoint/?${q}`, { method: "POST", headers: { Authorization: "Bearer " + await accessToken() } });
+      if (!r.ok) throw new Error(`ESI waypoint replied ${r.status} after ${k} of ${anchors.length}` + (r.status === 404 ? " (are you logged in to the game?)" : ""));
+    }
+    IN.msg = `${skipped.length ? `The game's router won't use ${skipped.join(", ")}, so the route goes around. ` : ""}Done: ${anchors.length} waypoint${anchors.length > 1 ? "s" : ""} set (${anchors.map(i => SY[i].n).join(" > ")}). The autopilot only stops at those. Check the route in game before you undock.`;
   } catch (e) { IN.msg = e.message; console.error("[ledger] waypoints", e); }
   IN.wpBusy = false; renderIntel();
 }
+// ----- cost / risk / reward for ratting in a system -----
+// chance of losing the ship per hour = ratting ships killed by players in the system + its neighbours (7 days, zKillboard)
+//                                      / ratting hours there (NPC kills over 7 days / your kills per hour)
+// loss cost = ship + fit at Jita - Platinum insurance payout + premium (ESI insurance prices), or the full value uninsured
+// reward / hour = your kills per hour x the region's ISK per NPC kill (or your own ISK/hour there, if you have payouts)
+// net = reward - chance x loss cost, as low / likely / high. All estimates; every input is shown.
+const CRR = { sys: "", ship: "", fit: 0, kph: 0, insured: true, ins: null, price: new Map(), loss: new Map(), busy: false, err: null };
+{ const c = store.get("ledger.crr"); if (c) Object.assign(CRR, { sys: c.sys || "", ship: c.ship || "", fit: +c.fit || 0, kph: +c.kph || 0, insured: c.insured !== false }); }
+const saveCrr = () => store.set("ledger.crr", { sys: CRR.sys, ship: CRR.ship, fit: CRR.fit, kph: CRR.kph, insured: CRR.insured });
+const KPH_DEFAULT = 60;              // stated default when your kill tracker has no ratting time yet
+async function loadInsurance() {
+  if (CRR.ins) return;
+  const c = store.get("ledger.ins"); if (c && Date.now() - c.t < 86400e3) { CRR.ins = new Map(c.list); return; }
+  const j = await (await fetch(ESI + "/insurance/prices/")).json();
+  CRR.ins = new Map(j.map(x => { const p = x.levels.find(l => l.name === "Platinum"); return [x.type_id, p ? [p.cost, p.payout] : [0, 0]]; }));
+  store.set("ledger.ins", { list: [...CRR.ins], t: Date.now() });
+}
+async function shipPrice(id) {
+  if (CRR.price.has(id)) return CRR.price.get(id);
+  const j = await (await fetch(`https://market.fuzzwork.co.uk/aggregates/?station=${STATION}&types=${id}`)).json();
+  const v = +j[id].sell.min || +j[id].buy.max || 0; CRR.price.set(id, v); return v;
+}
+// Ratting ships killed by players (not NPC-only kills) in one system over 7 days. One zKillboard request per system, 1 h cache.
+function lossesIn(sid) {
+  const c = CRR.loss.get(sid); if (c && Date.now() - c.t < 3600e3) return Promise.resolve(c.n);
+  return new Promise(res => { zkChain = zkChain.then(async () => {
+    let n = 0;
+    try { for (const k of await zkGet(`https://zkillboard.com/api/kills/solarSystemID/${sid}/pastSeconds/604800/`)) if (!(k.zkb && k.zkb.npc) && RATTER_IDS.has(k.victim.ship_type_id) && k.attackers.some(a => a.character_id)) n++; }
+    catch (e) { n = NaN; }
+    CRR.loss.set(sid, { n, t: Date.now() }); res(n);
+  }); });
+}
+// Your kills per hour and ISK per hour from the kill tracker (all sessions, and sessions in this system).
+function yourRates(sysName) {
+  const s = loadSso(); if (!s) return null;
+  const d = ktData(s.charId); if (!d.sessions.length) return null;
+  const all = d.sessions, here = all.filter(se => se.systems.includes(sysName));
+  const sum = (xs, f) => xs.reduce((a, x) => a + f(x), 0);
+  const hrs = sum(all, x => x.hours), hHere = sum(here, x => x.hours);
+  return { kph: d.detail && hrs ? sum(all, x => x.kills) / hrs : 0, hours: hrs, iskHere: hHere >= 1 ? sum(here, x => x.isk) / hHere : 0, hoursHere: hHere };
+}
+async function evalSystem() {
+  const s = SY_NAME.get((CRR.sys || "").toLowerCase()) || (IN.loc && IN.online && IN.online.online ? SY_ID.get(IN.loc.solar_system_id) : null);
+  const shipName = CRR.ship || (IN.ship && TDATA.get(IN.ship.ship_type_id) ? TDATA.get(IN.ship.ship_type_id).name : "Drake");
+  if (!s || !RAT) { CRR.res = null; return; }
+  CRR.busy = true; CRR.err = null; renderIntel();
+  try {
+    await loadInsurance();
+    const ids = await typeIds([shipName]), shipId = ids.get(shipName.toLowerCase());
+    if (!shipId) throw new Error(`No ship called "${shipName}"`);
+    const area = [s.i, ...s.nb];
+    const losses = await Promise.all(area.map(i => lossesIn(SY[i].id)));
+    if (losses.some(n => isNaN(n))) throw new Error("zKillboard didn't answer for every system; try again in a minute");
+    const lost = losses.reduce((a, b) => a + b, 0);
+    const npcWeek = area.reduce((a, i) => a + RAT.npc7[i] / 10 * 168, 0);
+    const mine = yourRates(s.n), kph = CRR.kph || (mine && mine.kph) || KPH_DEFAULT;
+    const kphSrc = CRR.kph ? "you typed it" : mine && mine.kph ? `your kill tracker (${mine.hours.toFixed(1)} h)` : "default, until your kill tracker has ratting time";
+    const ratHours = npcWeek / kph;
+    const regKills = SY.reduce((a, x) => x.reg === s.reg ? a + RAT.npc7[x.i] / 10 : a, 0);
+    const iskPerKill = RAT.bounty[s.reg] / Math.max(1, regKills * 24 * 31);
+    const reward = mine && mine.iskHere ? mine.iskHere : kph * iskPerKill;
+    const rewardSrc = mine && mine.iskHere ? `your payouts here (${mine.hoursHere.toFixed(1)} h)` : `${num(kph)} kills/h x ${iskShort(iskPerKill)} per kill (${esc(SYS.regions[s.reg])}, ${esc(RAT.merMonth)})`;
+    const hull = await shipPrice(shipId), [prem, payout] = CRR.ins.get(shipId) || [0, 0];
+    const value = hull + CRR.fit, lossCost = CRR.insured ? Math.max(0, value - payout + prem) : value;
+    const p = h => Math.min(1, h);
+    const P = { low: p(lost / Math.max(1, ratHours * 2)), likely: p(lost / Math.max(1, ratHours)), high: p((lost + 1) / Math.max(1, ratHours * 0.5)) };
+    const net = Object.fromEntries(Object.entries(P).map(([k, v]) => [k, reward - v * lossCost]));
+    CRR.res = { s, shipName, shipId, lost, area: area.length, npcWeek, kph, kphSrc, ratHours, iskPerKill, reward, rewardSrc, hull, prem, payout, value, lossCost, P, net };
+  } catch (e) { CRR.err = e.message; CRR.res = null; console.error("[ledger] cost/risk/reward", e); }
+  CRR.busy = false; renderIntel();
+}
+function crrCard() {
+  let h = `<div style="display:grid;gap:8px"><span class="lbl">Cost / risk / reward · ratting</span>
+    <div class="mbar"><div class="ctl"><label for="crSys">System</label><input id="crSys" list="inList" value="${esc(CRR.sys)}" placeholder="where you are" autocomplete="off" maxlength="40"></div>
+      <div class="ctl"><label for="crShip">Ship</label><input id="crShip" value="${esc(CRR.ship)}" placeholder="${esc(IN.ship && TDATA.get(IN.ship.ship_type_id) ? TDATA.get(IN.ship.ship_type_id).name : "Drake")}" autocomplete="off" maxlength="60"></div>
+      <div class="ctl"><label for="crFit">Fit value (ISK)</label><input type="number" id="crFit" min="0" step="1000000" value="${CRR.fit || ""}" placeholder="0 = hull only"></div>
+      <div class="ctl"><label for="crKph">Your NPC kills / hour</label><input type="number" id="crKph" min="1" step="1" value="${CRR.kph || ""}" placeholder="from kill tracker"></div>
+      <label class="chk"><input type="checkbox" id="crIns"${CRR.insured ? " checked" : ""}> Platinum insured</label>
+      <button class="btn primary" type="button" data-in="crr"${CRR.busy ? " disabled" : ""}>${CRR.busy ? "Working…" : "Work it out"}</button></div>`;
+  if (CRR.err) h += `<div class="note" style="color:var(--bad)">${esc(CRR.err)}</div>`;
+  const r = CRR.res; if (!r) return h + `<div class="note">Picks where you are if the System box is empty. Uses zKillboard (one request per system and neighbour), ESI insurance prices and Jita prices.</div></div>`;
+  const pct = x => (x * 100 < 0.1 ? (x * 100).toFixed(2) : (x * 100).toFixed(1)) + "%";
+  const v = r.net.likely >= 0.7 * r.reward ? ["Good", "instant"] : r.net.likely > 0 ? ["Marginal", "thin"] : ["Not worth it", "bad"];
+  h += `<div class="rec"><div style="display:flex;flex-wrap:wrap;gap:6px 16px;align-items:baseline"><b style="font:700 18px var(--f-display)">${esc(r.s.n)}</b> ${secTag(r.s)} <span>in a ${esc(r.shipName)}</span><span class="pill ${v[1]}">${v[0]}</span>
+      <span class="big" style="font-size:22px">${iskShort(r.net.likely)}/h</span><span class="note">net, likely</span></div>
+    <div class="scroll"><table class="reftab"><thead><tr><th></th><th>Low risk</th><th>Likely</th><th>High risk</th></tr></thead><tbody>
+      <tr><td>Chance of losing the ship, per hour</td><td>${pct(r.P.low)}</td><td>${pct(r.P.likely)}</td><td>${pct(r.P.high)}</td></tr>
+      <tr><td>Expected loss, per hour</td><td>${iskShort(r.P.low * r.lossCost)}</td><td>${iskShort(r.P.likely * r.lossCost)}</td><td>${iskShort(r.P.high * r.lossCost)}</td></tr>
+      <tr><td>Reward, per hour</td><td colspan="3" style="text-align:center">${iskShort(r.reward)}</td></tr>
+      <tr><td><b>Net ISK per hour</b></td><td><b>${iskShort(r.net.low)}</b></td><td><b>${iskShort(r.net.likely)}</b></td><td><b>${iskShort(r.net.high)}</b></td></tr></tbody></table></div>
+    <div class="note">Hours ratting until a likely loss: about ${r.P.likely > 0 ? num(1 / r.P.likely) : "no recorded losses"}. ${r.lost === 0 ? "No ratting ships were killed by players here or next door in 7 days; the high-risk column still assumes one could be." : ""}</div></div>
+    <div class="note"><b>Inputs:</b> ${r.lost} ratting ship${r.lost === 1 ? "" : "s"} killed by players in ${esc(r.s.n)} and its ${r.area - 1} neighbours (zKillboard, 7 days) ·
+      ${num(r.npcWeek)} NPC kills there in 7 days ÷ ${num(r.kph)} kills/h (${r.kphSrc}) = ${num(r.ratHours)} ratting hours ·
+      reward: ${r.rewardSrc} · ship ${iskShort(r.hull)} + fit ${iskShort(CRR.fit)} = ${iskShort(r.value)}${CRR.insured ? `, Platinum pays ${iskShort(r.payout)} for a ${iskShort(r.prem)} premium, so a loss costs ${iskShort(r.lossCost)}` : " uninsured"}.
+      Low / high risk: half / double the ratting hours, and one extra loss for "high". The region's ISK per kill already includes average bounty modifiers and ESS; corp tax is not taken off.</div></div>`;
+  return h;
+}
+
 function renderIntel() {
   const main = $("main"); if (S.tab !== "intel" || !main) return;
   if (main.dataset.view !== "intel") {
@@ -3161,12 +3311,13 @@ function renderIntel() {
           <div class="ctl"><label for="inTo">To</label><input id="inTo" list="inList" value="${esc(IN.to)}" placeholder="System name" autocomplete="off" maxlength="40"></div>
           <div class="ctl"><span class="lbl">Prefer</span><div class="seg" id="inMode">${ROUTES.map(([v, n]) => `<button type="button" data-v="${v}">${n}</button>`).join("")}</div></div></div>
         <datalist id="inList">${SY.map(x => `<option value="${esc(x.n)}">`).join("")}</datalist>
-        <div id="inRoute" style="display:grid;gap:8px"></div></div></section>`;
+        <div id="inRoute" style="display:grid;gap:8px"></div></div>
+      <div id="inCrr"></div></section>`;
   }
   $("inMode").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === IN.mode));
-  for (const id of ["inHere", "inRoute"]) {
+  for (const id of ["inHere", "inRoute", "inCrr"]) {
     const el = $(id), f = captureFocus(el);
-    el.innerHTML = id === "inHere" ? hereCard() : routeCard();
+    el.innerHTML = id === "inHere" ? hereCard() : id === "inRoute" ? routeCard() : crrCard();
     restoreFocus(el, f);
   }
 }
@@ -3177,10 +3328,15 @@ function wireIntel() {
     const b = e.target.closest("[data-in]");
     if (b && b.dataset.in === "allow") startLogin("intel");
     if (b && b.dataset.in === "wp") setWaypoints();
+    if (b && b.dataset.in === "crr") {
+      CRR.sys = $("crSys").value.trim(); CRR.ship = $("crShip").value.trim(); CRR.fit = Math.max(0, +$("crFit").value || 0);
+      CRR.kph = Math.max(0, +$("crKph").value || 0); CRR.insured = $("crIns").checked; saveCrr(); evalSystem();
+    }
     const m = e.target.closest("#inMode button"); if (m) { IN.mode = m.dataset.v; saveIntel(); renderIntel(); }
   });
   main.addEventListener("input", e => {
     if (S.tab !== "intel") return;
+    if (e.target.id === "inAp") { IN.ap = e.target.value; saveIntel(); return; }
     if (e.target.id === "inTo" || e.target.id === "inFrom") { IN[e.target.id === "inTo" ? "to" : "from"] = e.target.value; IN.msg = null; saveIntel(); renderIntel(); }
   });
 }
